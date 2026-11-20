@@ -3,6 +3,7 @@ import '../models/history.dart';
 import '../models/notifications.dart';
 import '../models/sensor.dart';
 import '../models/settings.dart';
+import 'firebase_source.dart';
 import 'mock_data.dart';
 
 // The single door screens use to get device data.
@@ -13,12 +14,18 @@ import 'mock_data.dart';
 
 const _latency = Duration(milliseconds: 300); // pretend network delay
 
+/// true = read the real ESP32 node through Firebase; false = sample data.
+/// Flip it to false to demo the UI without hardware or internet.
+const bool useFirebase = true;
+
 Future<DeviceStatus> getStatus() async {
+  if (useFirebase) return fetchFirebaseStatus();
   await Future<void>.delayed(_latency);
   return currentMockStatus();
 }
 
 Future<List<AlertEvent>> getAlertHistory() async {
+  if (useFirebase) return fetchFirebaseHistory();
   await Future<void>.delayed(_latency);
   return mockAlertHistory();
 }
@@ -39,14 +46,22 @@ Future<DeviceInfo> getDeviceInfo() async {
 }
 
 Future<Thresholds> getThresholds() async {
+  if (useFirebase) {
+    final saved = await fetchFirebaseThresholds();
+    if (saved != null) return saved;
+  }
   await Future<void>.delayed(_latency);
   return mockThresholds();
 }
 
 /// Sends new thresholds to the device ("Save and sync to device").
 Future<void> saveThresholds(Thresholds thresholds) async {
-  await Future<void>.delayed(_latency);
-  saveMockThresholds(thresholds);
+  if (useFirebase) {
+    await saveFirebaseThresholds(thresholds);
+  } else {
+    await Future<void>.delayed(_latency);
+    saveMockThresholds(thresholds);
+  }
 }
 
 Future<List<AlertContact>> getContacts() async {

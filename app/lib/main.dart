@@ -1,6 +1,9 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'data/status_repository.dart';
+import 'firebase_options.dart'; // created by `flutterfire configure`
 import 'models/device_status.dart';
 import 'screens/critical_alert_screen.dart';
 import 'screens/landing_screen.dart';
@@ -14,6 +17,15 @@ final appNavigatorKey = GlobalKey<NavigatorState>();
 /// notification setup has to finish before the app starts.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // needed before plugins run
+  try {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    // The database rules need a signed-in user; anonymous is enough for the app.
+    if (FirebaseAuth.instance.currentUser == null) {
+      await FirebaseAuth.instance.signInAnonymously();
+    }
+  } catch (e) {
+    debugPrint('Firebase setup failed: $e'); // the app still opens
+  }
   final openedFromCriticalAlert = await NotificationService.init();
   NotificationService.fallbackOpenCritical = _openCriticalAlert;
   if (openedFromCriticalAlert) {

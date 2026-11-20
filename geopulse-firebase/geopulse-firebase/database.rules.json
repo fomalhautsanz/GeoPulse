@@ -1,0 +1,14 @@
+{
+  "rules": {
+    "geopulse": {
+      ".read": "auth != null",
+      "nodes": {
+        "$node": {
+          "status":     { ".write": "auth.token.email === 'gp01@geopulse.test'" },
+          "history":    { ".write": "auth.token.email === 'gp01@geopulse.test'" },
+          "thresholds": { ".write": "auth != null" }
+        }
+      }
+    }
+  }
+}
