@@ -14,23 +14,47 @@ class NotificationSettingsScreen extends StatefulWidget {
   const NotificationSettingsScreen({super.key});
 
   @override
-  State<NotificationSettingsScreen> createState() => _NotificationSettingsScreenState();
+  State<NotificationSettingsScreen> createState() =>
+      _NotificationSettingsScreenState();
 }
 
-class _NotificationSettingsScreenState extends State<NotificationSettingsScreen> {
+class _NotificationSettingsScreenState
+    extends State<NotificationSettingsScreen> {
   NotificationPrefs? _prefs;
+  Object? _error;
 
   @override
   void initState() {
     super.initState();
-    getNotificationPrefs().then((p) {
-      if (mounted) setState(() => _prefs = p);
-    });
+    _load();
   }
 
-  void _update(NotificationPrefs prefs) {
+  Future<void> _load() async {
+    try {
+      final prefs = await getNotificationPrefs();
+      if (mounted) {
+        setState(() {
+          _prefs = prefs;
+          _error = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _update(NotificationPrefs prefs) async {
+    final previous = _prefs;
     setState(() => _prefs = prefs);
-    saveNotificationPrefs(prefs);
+    try {
+      await saveNotificationPrefs(prefs);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _prefs = previous;
+        _error = error;
+      });
+    }
   }
 
   @override
@@ -38,17 +62,31 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
     final p = _prefs;
     return SubScreenScaffold(
       title: 'Notification Settings',
-      children: p == null
-          ? const [Center(child: CircularProgressIndicator(color: AppColors.brand))]
+      children: _error != null
+          ? [
+              Text('Could not load notification settings: $_error'),
+              TextButton(onPressed: _load, child: const Text('Retry')),
+            ]
+          : p == null
+          ? const [
+              Center(child: CircularProgressIndicator(color: AppColors.brand)),
+            ]
           : [
               const SectionTitle('Alerts'),
               GroupedCard(
                 children: [
                   ListRow(
-                    leading: const NotificationBadge(type: NotificationType.critical, size: 36),
+                    leading: const NotificationBadge(
+                      type: NotificationType.critical,
+                      size: 36,
+                    ),
                     title: 'Critical alerts',
-                    subtitle: 'Always on. Alarm sound, ignores silent mode and Do Not Disturb.',
-                    trailing: const AppSwitch(value: true, onChanged: null, locked: true),
+                    subtitle: 'Shown on critical status changes while connected; system permission is required.',
+                    trailing: const AppSwitch(
+                      value: true,
+                      onChanged: null,
+                      locked: true,
+                    ),
                   ),
                   ListRow(
                     leading: const IconBadge(
@@ -59,13 +97,22 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
                     ),
                     title: 'Warnings (Watch and High)',
                     subtitle: 'Sound and vibration',
-                    trailing: AppSwitch(value: p.warnings, onChanged: (v) => _update(p.copyWith(warnings: v))),
+                    trailing: AppSwitch(
+                      value: p.warnings,
+                      onChanged: (v) => _update(p.copyWith(warnings: v)),
+                    ),
                   ),
                   ListRow(
-                    leading: const NotificationBadge(type: NotificationType.backToStable, size: 36),
+                    leading: const NotificationBadge(
+                      type: NotificationType.backToStable,
+                      size: 36,
+                    ),
                     title: 'Back to Stable',
                     subtitle: 'Quiet notification when risk clears',
-                    trailing: AppSwitch(value: p.backToStable, onChanged: (v) => _update(p.copyWith(backToStable: v))),
+                    trailing: AppSwitch(
+                      value: p.backToStable,
+                      onChanged: (v) => _update(p.copyWith(backToStable: v)),
+                    ),
                   ),
                   // Android 14+ asks separately before an app may show
                   // full-screen alarms over the lock screen.
@@ -89,23 +136,37 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
               GroupedCard(
                 children: [
                   ListRow(
-                    leading: const NotificationBadge(type: NotificationType.offline, size: 36),
+                    leading: const NotificationBadge(
+                      type: NotificationType.offline,
+                      size: 36,
+                    ),
                     title: 'Device offline or back online',
-                    subtitle: 'For DRRM personnel and device keepers',
-                    trailing: AppSwitch(value: p.deviceOnline, onChanged: (v) => _update(p.copyWith(deviceOnline: v))),
+                    subtitle: 'When status changes while this app is connected',
+                    trailing: AppSwitch(
+                      value: p.deviceOnline,
+                      onChanged: (v) => _update(p.copyWith(deviceOnline: v)),
+                    ),
                   ),
                   ListRow(
-                    leading: const NotificationBadge(type: NotificationType.lowBattery, size: 36),
+                    leading: const NotificationBadge(
+                      type: NotificationType.lowBattery,
+                      size: 36,
+                    ),
                     title: 'Low battery',
-                    subtitle: 'At 20% and 10%',
-                    trailing: AppSwitch(value: p.lowBattery, onChanged: (v) => _update(p.copyWith(lowBattery: v))),
+                    subtitle:
+                        'Unavailable: this firmware reports no battery level',
+                    trailing: const AppSwitch(
+                      value: false,
+                      onChanged: null,
+                      locked: true,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 14),
               const InfoBanner(
                 icon: Icons.notifications_none_rounded,
-                text: 'App notifications need internet. SMS alerts from the device still arrive without it.',
+                text: 'App notifications need an internet connection. This firmware does not send SMS.',
               ),
             ],
     );

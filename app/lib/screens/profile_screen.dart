@@ -18,15 +18,19 @@ class ProfileScreen extends StatelessWidget {
     final confirmed = await showConfirmDialog(
       context,
       title: 'Log out?',
-      message: 'You won’t get app alerts on this phone until you log in again. '
-          'SMS alerts from the device still arrive.',
+      message:
+          'You won’t get app alerts on this phone until you log in again. '
+          'The connected firmware does not send SMS alerts.',
       confirmLabel: 'Log out',
     );
     if (!confirmed || !context.mounted) return;
     await auth.logOut();
     if (!context.mounted) return;
     // Back to Landing, removing every screen of the logged-in app.
-    Navigator.of(context).pushAndRemoveUntil(fadeRoute<void>(context, const LandingScreen()), (_) => false);
+    Navigator.of(context).pushAndRemoveUntil(
+      fadeRoute<void>(context, const LandingScreen()),
+      (_) => false,
+    );
   }
 
   @override
@@ -55,10 +59,17 @@ class ProfileScreen extends StatelessWidget {
             width: 76,
             height: 76,
             alignment: Alignment.center,
-            decoration: const BoxDecoration(color: AppColors.watchContainer, shape: BoxShape.circle),
+            decoration: const BoxDecoration(
+              color: AppColors.watchContainer,
+              shape: BoxShape.circle,
+            ),
             child: Text(
               initials,
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: AppColors.brand),
+              style: const TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                color: AppColors.brand,
+              ),
             ),
           ),
         ),
@@ -66,22 +77,39 @@ class ProfileScreen extends StatelessWidget {
         Text(
           user?.name ?? 'Not logged in',
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: AppColors.ink),
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: AppColors.ink,
+          ),
         ),
         const SizedBox(height: 6),
         if (user != null) Center(child: TagChip(user.role.label)),
         const SizedBox(height: 22),
         GroupedCard(
           children: [
-            _InfoRow(icon: Icons.badge_outlined, label: 'Role', value: user?.role.label ?? '–'),
-            _InfoRow(icon: Icons.location_on_outlined, label: 'Barangay / site', value: user?.barangay ?? '–'),
-            _InfoRow(icon: Icons.phone_outlined, label: 'Phone', value: user?.phone ?? '–'),
+            _InfoRow(
+              icon: Icons.badge_outlined,
+              label: 'Role',
+              value: user?.role.label ?? '–',
+            ),
+            _InfoRow(
+              icon: Icons.location_on_outlined,
+              label: 'Barangay / site',
+              value: user?.barangay ?? '–',
+            ),
+            _InfoRow(
+              icon: Icons.phone_outlined,
+              label: 'Phone',
+              value: user?.phone ?? '–',
+            ),
           ],
         ),
         const SizedBox(height: 12),
         const InfoBanner(
           icon: Icons.info_outline_rounded,
-          text: 'Editing your profile will come later. Your role decides which alerts and '
+          text:
+              'Editing your profile will come later. Your role decides which alerts and '
               'device controls you see.',
         ),
       ],
@@ -90,7 +118,11 @@ class ProfileScreen extends StatelessWidget {
 }
 
 class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.icon, required this.label, required this.value});
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   final IconData icon;
   final String label;
@@ -115,8 +147,18 @@ class _InfoRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.ink)),
+                Text(
+                  label,
+                  style: const TextStyle(fontSize: 12, color: AppColors.muted),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.ink,
+                  ),
+                ),
               ],
             ),
           ),

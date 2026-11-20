@@ -22,6 +22,7 @@ class NotificationsScreen extends StatefulWidget {
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
   List<AppNotification>? _items;
+  Object? _error;
 
   @override
   void initState() {
@@ -30,16 +31,36 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _load() async {
-    final items = await getNotifications();
-    if (mounted) setState(() => _items = items);
+    try {
+      final items = await getNotifications();
+      if (mounted) {
+        setState(() {
+          _items = items;
+          _error = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
   }
 
   Future<void> _open(AppNotification n) async {
-    await markNotificationRead(n.id);
-    await _load();
+    try {
+      await markNotificationRead(n.id);
+      await _load();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update notification: $error')),
+        );
+      }
+      return;
+    }
     if (n.type == NotificationType.critical) {
       // The same action as tapping a critical system notification.
-      (NotificationService.onOpenCritical ?? NotificationService.fallbackOpenCritical)?.call();
+      (NotificationService.onOpenCritical ??
+              NotificationService.fallbackOpenCritical)
+          ?.call();
     }
   }
 
@@ -56,7 +77,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       title: 'Notifications',
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
       children: [
-        if (items == null)
+        if (_error != null)
+          Column(
+            children: [
+              Text('Could not load notifications: $_error'),
+              TextButton(onPressed: _load, child: const Text('Retry')),
+            ],
+          )
+        else if (items == null)
           const Center(child: CircularProgressIndicator(color: AppColors.brand))
         else ...[
           Row(
@@ -69,14 +97,30 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               if (unread > 0)
                 Pressable(
                   onTap: () async {
-                    await markAllNotificationsRead();
-                    _load();
+                    try {
+                      await markAllNotificationsRead();
+                      await _load();
+                    } catch (error) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Could not update notifications: $error',
+                            ),
+                          ),
+                        );
+                      }
+                    }
                   },
                   child: const Padding(
                     padding: EdgeInsets.symmetric(vertical: 6),
                     child: Text(
                       'Mark all as read',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.brand),
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.brand,
+                      ),
                     ),
                   ),
                 ),
@@ -135,23 +179,43 @@ class _NotificationCard extends StatelessWidget {
                         Expanded(
                           child: Text(
                             n.title,
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.ink),
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.ink,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Text(formatClock(n.time), style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+                        Text(
+                          formatClock(n.time),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.muted,
+                          ),
+                        ),
                         if (!n.read) ...[
                           const SizedBox(width: 6),
                           Container(
                             width: 8,
                             height: 8,
-                            decoration: const BoxDecoration(color: AppColors.unreadDot, shape: BoxShape.circle),
+                            decoration: const BoxDecoration(
+                              color: AppColors.unreadDot,
+                              shape: BoxShape.circle,
+                            ),
                           ),
                         ],
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Text(n.body, style: const TextStyle(fontSize: 13, height: 18 / 13, color: AppColors.ink)),
+                    Text(
+                      n.body,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        height: 18 / 13,
+                        color: AppColors.ink,
+                      ),
+                    ),
                   ],
                 ),
               ),

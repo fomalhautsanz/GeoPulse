@@ -13,53 +13,94 @@ class DeviceStatus {
     required this.soilMoisturePercent,
     required this.vibrationPerMin,
     required this.tiltDegrees,
+    this.tiltX,
+    this.tiltY,
+    this.sustainedVibration = false,
+    this.adxlReady = false,
+    this.soilWatchThresholdPercent = soilWarningPercent,
+    this.soilCriticalThresholdPercent = soilCriticalPercent,
+    this.vibrationThresholdPerMin = vibrationLimitPerMin,
+    this.tiltThresholdDegrees = tiltLimitDegrees,
     required this.online,
-    required this.batteryPercent,
-    required this.gsmBars,
+    this.batteryPercent,
+    this.wifiBars,
     required this.lastUpdate,
-    required this.sirenOn,
-    required this.smsSent,
-    required this.smsTotal,
   });
 
   /// Sensor limits shown on the cards. `static` means they belong to the
   /// class itself, not to each snapshot.
   static const int soilWarningPercent = 70; // Watch from here
-  static const int soilHighPercent = 80;
   static const int soilCriticalPercent = 90;
   static const int vibrationLimitPerMin = 5;
   static const double tiltLimitDegrees = 2.0;
-  static const int maxGsmBars = 4;
+  static const int maxWifiBars = 4;
 
   final String nodeId; // e.g. "GP‑01"
   final StatusLevel level;
   final int soilMoisturePercent; // 0–100
-  final int vibrationPerMin; // SW‑420 vibration events per minute
-  final double tiltDegrees; // MPU6050 ground tilt
+  final int vibrationPerMin; // ADXL345 vibration events per minute
+  final double tiltDegrees; // ADXL345 ground tilt from the startup reference
+  final double? tiltX;
+  final double? tiltY;
+  final bool sustainedVibration;
+  final bool adxlReady;
+  final int soilWatchThresholdPercent;
+  final int soilCriticalThresholdPercent;
+  final int vibrationThresholdPerMin;
+  final double tiltThresholdDegrees;
   final bool online;
-  final int batteryPercent; // 0–100
-  final int gsmBars; // 0–[maxGsmBars]
+  final int? batteryPercent; // null when the node has no battery sensor
+  final int? wifiBars; // 0–[maxWifiBars], derived from Wi-Fi RSSI
   final DateTime lastUpdate;
-  final bool sirenOn; // true = siren sounding, false = standby
-  final int smsSent; // alert SMS messages sent so far…
-  final int smsTotal; // …out of this many contacts
 
   // A `get`ter is a value computed from other fields, used like a field:
   // `status.soilLevel`.
 
   /// How worrying the soil reading is on its own.
+  int get soilHighThreshold =>
+      (soilWatchThresholdPercent + soilCriticalThresholdPercent + 1) ~/ 2;
+
   StatusLevel get soilLevel {
-    if (soilMoisturePercent >= soilCriticalPercent) return StatusLevel.critical;
-    if (soilMoisturePercent >= soilHighPercent) return StatusLevel.high;
-    if (soilMoisturePercent >= soilWarningPercent) return StatusLevel.watch;
+    if (soilMoisturePercent >= soilCriticalThresholdPercent) {
+      return StatusLevel.critical;
+    }
+    if (soilMoisturePercent >= soilHighThreshold) return StatusLevel.high;
+    if (soilMoisturePercent >= soilWatchThresholdPercent) {
+      return StatusLevel.watch;
+    }
     return StatusLevel.stable;
   }
 
   /// How worrying the vibration reading is on its own.
   StatusLevel get vibrationLevel =>
-      vibrationPerMin >= vibrationLimitPerMin ? StatusLevel.critical : StatusLevel.stable;
+      adxlReady &&
+          sustainedVibration &&
+          vibrationPerMin >= vibrationThresholdPerMin
+      ? StatusLevel.critical
+      : StatusLevel.stable;
 
   /// How worrying the tilt reading is on its own.
-  StatusLevel get tiltLevel =>
-      tiltDegrees >= tiltLimitDegrees ? StatusLevel.critical : StatusLevel.stable;
+  StatusLevel get tiltLevel => adxlReady && tiltDegrees >= tiltThresholdDegrees
+      ? StatusLevel.critical
+      : StatusLevel.stable;
+
+  DeviceStatus copyWith({bool? online}) => DeviceStatus(
+    nodeId: nodeId,
+    level: level,
+    soilMoisturePercent: soilMoisturePercent,
+    vibrationPerMin: vibrationPerMin,
+    tiltDegrees: tiltDegrees,
+    tiltX: tiltX,
+    tiltY: tiltY,
+    sustainedVibration: sustainedVibration,
+    adxlReady: adxlReady,
+    soilWatchThresholdPercent: soilWatchThresholdPercent,
+    soilCriticalThresholdPercent: soilCriticalThresholdPercent,
+    vibrationThresholdPerMin: vibrationThresholdPerMin,
+    tiltThresholdDegrees: tiltThresholdDegrees,
+    online: online ?? this.online,
+    batteryPercent: batteryPercent,
+    wifiBars: wifiBars,
+    lastUpdate: lastUpdate,
+  );
 }

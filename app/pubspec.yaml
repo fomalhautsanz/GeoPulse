@@ -41,6 +41,7 @@ dependencies:
   firebase_core: ^5.2.0
   firebase_auth: ^7.1.0
   firebase_database: ^13.1.0
+  web: ^1.1.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -66,6 +67,7 @@ flutter:
   # Images and icons exported from the Figma frame.
   assets:
     - assets/icons/
+    - assets/sounds/
 
   # Roboto, bundled so text looks the same on Android, iOS and web, offline too.
   fonts:

@@ -1,23 +1,16 @@
-/*
-  GeoPulse node GP-01  -  landslide alert (ESP32)
-
-  Sensors : resistive soil probe (MH module, analog out) + ADXL345 (I2C)
-  Outputs : 3 LEDs (local, works with no internet) + Firebase Realtime DB
-
-  Libraries (Library Manager):
-    - "Firebase Arduino Client Library for ESP8266 and ESP32"  (mobizt)
-    - "Adafruit ADXL345"  and  "Adafruit Unified Sensor"
-
-  Wiring
-    ADXL345 : VCC->3V3  GND->GND  SDA->GPIO21  SCL->GPIO22
-              CS->3V3 (I2C mode)  SDO->GND (address 0x53)
-    Soil    : AO->GPIO34   GND->GND   VCC->GPIO25 (powered only while reading,
-              so the probe corrodes much less)
-    LEDs    : green GPIO26, yellow GPIO27, red GPIO14, each through 220 ohm to GND
-    Speaker : GPIO13 -> 1k resistor -> 10uF capacitor (+ toward resistor) -> aux plug tip
-              ESP32 GND -> aux plug sleeve. Power the speaker's USB from a power bank.
-              (A bare 8 ohm speaker also works: GPIO13 -> 150 ohm -> speaker -> GND.)
-*/
+// GeoPulse soil and motion monitor (ESP32 -> Wi-Fi -> Firebase Realtime Database)
+//
+// ADXL345: VCC -> 3V3, GND -> GND, SDA -> GPIO21, SCL -> GPIO22,
+//          CS -> 3V3 (I2C), SDO -> GND (address 0x53).
+// Soil module: AO -> GPIO34, GND -> GND, VCC -> 3V3.
+// Serial Monitor: 115200 baud. Type r and press Enter to reset soil min/max.
+//
+// How motion detection works:
+//   * A dedicated FreeRTOS task reads the ADXL345 at ~100 Hz, so slow Firebase
+//     uploads in loop() can never make the sensor miss a shake.
+//   * A slow-moving baseline (gravity + gentle tilt) is subtracted from every
+//     reading. What is left over is the "dynamic" acceleration = vibration.
+//   * Tilt is measured from the baseline, so shaking does not count as tilting.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -25,224 +18,643 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL345_U.h>
 #include <Firebase_ESP_Client.h>
-#include "addons/TokenHelper.h"
+#include <time.h>
 #include "secrets.h"
 
-// ---------- settings you will tune ----------
-const char* NODE_ID = "GP-01";
+// ---------------------------------------------------------------- pins / paths
+const int PIN_SOIL = 34;
+const int PIN_ADXL_SDA = 21;
+const int PIN_ADXL_SCL = 22;
+const char *STATUS_PATH = "/geopulse/nodes/GP-01/status";
+const char *READINGS_PATH = "/geopulse/nodes/GP-01/readings";
+const char *HISTORY_PATH = "/geopulse/nodes/GP-01/history";
+const char *THRESHOLDS_PATH = "/geopulse/nodes/GP-01/thresholds";
 
-const int PIN_SOIL = 34, PIN_SOIL_PWR = 25;
-const int PIN_LED_G = 26, PIN_LED_Y = 27, PIN_LED_R = 14;
-const int PIN_SPK = 13;
+// ---------------------------------------------------------------- timing
+const unsigned long UPLOAD_INTERVAL_MS = 1000;
+const unsigned long SENSOR_HISTORY_INTERVAL_MS = 300000;
+const unsigned long THRESHOLD_REFRESH_INTERVAL_MS = 30000;
+const unsigned long ADXL_SAMPLE_INTERVAL_MS = 10;   // ~100 Hz
+const unsigned long VIBRATION_MIN_GAP_MS = 100;     // max 10 counted events per second
+const uint32_t VIBRATION_CONFIRM_WINDOW_SECONDS = 5;
+const uint32_t VIBRATION_CONFIRM_ACTIVE_SECONDS = 3;
 
-// Soil calibration: read the raw value in dry air/dry soil and in a glass of
-// water (see the Serial Monitor), then put the numbers here.
-int SOIL_DRY_RAW = 3200;   // 0 %
-int SOIL_WET_RAW = 1400;   // 100 %
+// Baseline smoothing: higher = baseline follows the sensor faster
+// (less vibration seen, tilt reacts faster). 0.05 at 100 Hz is about 0.2 s.
+const float BASELINE_ALPHA = 0.05f;
 
-// Defaults; the app can change these (Settings > Thresholds) every ~30 s.
-int   soilWatch = 70, soilCritical = 90;
-float tiltLimit = 2.0;      // degrees away from the position at power-on
-int   vibLimit  = 5;        // shake events per minute
-bool  sirenEnabled = true;  // the app's siren switch mutes the speaker
-const float VIB_DELTA = 1.5;      // m/s^2 jump between readings = 1 event
-const int   TILT_HOLD_SECONDS = 3; // tilt must last this long (ignores bumps)
-// --------------------------------------------
+// ---------------------------------------------------------------- calibration / thresholds
+// Calibration: put your own readings here.
+int SOIL_DRY_RAW = 3200; // reading in the dry soil you will use = 0 %
+int SOIL_WET_RAW = 1400; // reading in water or soaked soil     = 100 %
+int soilWatchPercent = 70;
+int soilCriticalPercent = 90;
+int vibrationThresholdPerMin = 5;
+float tiltThresholdDegrees = 2.0f;
+// Written by loop() (Firebase thresholds) and read by the ADXL task.
+volatile float vibrationDeltaM_S2 = 1.0f;
 
-enum Level { LV_STABLE, LV_WATCH, LV_HIGH, LV_CRITICAL };
-const char* LEVEL_NAME[] = {"stable", "watch", "high", "critical"};
+// ---------------------------------------------------------------- loop-side state
+int rawMin = 4095, rawMax = 0;
+unsigned long lastUploadMs = 0;
+unsigned long lastHistoryUploadMs = 0;
+unsigned long lastSoilReadMs = 0;
+unsigned long lastThresholdRefreshMs = 0;
+unsigned long lastHistoryErrorLogMs = 0;
+int soilRaw = 0, soilPercent = 0;
+time_t calibratedAt = 0;
+char lastUploadedLevel[16] = "";
+char lastHazardKind[16] = "";
+
+// Copies of the motion state, refreshed from the ADXL task by syncMotionState().
+float tiltX = 0, tiltY = 0, tiltDegrees = 0;
+int vibrationPerMin = 0;
+int vibrationPeakPerMin = 0;
+bool sustainedVibration = false;
+time_t vibrationPeakAt = 0;
+
+// ---------------------------------------------------------------- ADXL task state
+struct MotionState
+{
+  float tiltX;
+  float tiltY;
+  float tiltDegrees;
+  int perMin;
+  int peakPerMin;
+  bool sustained;
+  time_t peakAt;
+};
 
 Adafruit_ADXL345_Unified accel(12345);
+bool adxlReady = false;
+
+MotionState motionShared = {}; // written by the task, read by loop() (guarded by motionMux)
+portMUX_TYPE motionMux = portMUX_INITIALIZER_UNLOCKED;
+MotionState motionLocal = {};  // private to the task
+
+float referenceX = 0, referenceY = 0, referenceZ = 0; // still position from calibration
+float referencePitch = 0, referenceRoll = 0;
+float baseX = 0, baseY = 0, baseZ = 0; // slow baseline
+uint16_t vibrationBuckets[60] = {};
+uint32_t lastBucketSecond = 0;
+unsigned long lastVibrationEventMs = 0;
+
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-float refX, refY, refZ, refPitch, refRoll;   // position at power-on
-float sumX, sumY, sumZ; int sumN = 0;
-float lastMag = 0;
-uint16_t vibBucket[60]; uint32_t bucketSec = 0;
-int tiltHold = 0;
+// ---------------------------------------------------------------- forward declarations
+void connectToWiFi();
+void syncClock();
+void setupFirebase();
+bool refreshThresholds(bool force);
+bool uploadStatus(int soilValue);
+bool uploadSensorReading(int soilValue);
 
-int   soilPct = 0, vibPerMin = 0;
-float tiltDeg = 0, tiltX = 0, tiltY = 0;
-Level level = LV_STABLE, lastSentLevel = LV_STABLE;
-bool  historyPending = false;
+// ---------------------------------------------------------------- motion helpers
+float pitchOf(float x, float y, float z)
+{
+  return atan2f(x, sqrtf(y * y + z * z)) * 180.0f / PI;
+}
 
-uint32_t tRead = 0, tEval = 0, tSend = 0, tThr = 0;
-String base() { return String("/geopulse/nodes/") + NODE_ID; }
+float rollOf(float x, float y, float z)
+{
+  return atan2f(y, sqrtf(x * x + z * z)) * 180.0f / PI;
+}
 
-float pitchOf(float x, float y, float z) { return atan2(x, sqrt(y * y + z * z)) * 180.0 / PI; }
-float rollOf (float x, float y, float z) { return atan2(y, sqrt(x * x + z * z)) * 180.0 / PI; }
+// Clears buckets for seconds that have passed, then totals the last 60 seconds.
+void advanceVibrationBuckets(uint32_t currentSecond)
+{
+  if (currentSecond != lastBucketSecond)
+  {
+    uint32_t elapsed = currentSecond - lastBucketSecond;
+    if (elapsed > 60)
+      elapsed = 60;
+    for (uint32_t i = 1; i <= elapsed; i++)
+    {
+      vibrationBuckets[(lastBucketSecond + i) % 60] = 0;
+    }
+    lastBucketSecond = currentSecond;
+  }
 
-void calibrateTilt() {
+  int total = 0;
+  for (uint16_t count : vibrationBuckets)
+    total += count;
+  motionLocal.perMin = total;
+}
+
+bool hasSustainedVibration(uint32_t currentSecond)
+{
+  uint32_t activeSeconds = 0;
+  for (uint32_t offset = 0;
+       offset < VIBRATION_CONFIRM_WINDOW_SECONDS && offset <= currentSecond;
+       offset++)
+  {
+    if (vibrationBuckets[(currentSecond - offset) % 60] > 0)
+    {
+      activeSeconds++;
+    }
+  }
+  return activeSeconds >= VIBRATION_CONFIRM_ACTIVE_SECONDS;
+}
+
+void calibrateADXL()
+{
+  Serial.println("Keep the node still while calibrating ADXL345...");
   float x = 0, y = 0, z = 0;
-  for (int i = 0; i < 50; i++) {
-    sensors_event_t e; accel.getEvent(&e);
-    x += e.acceleration.x; y += e.acceleration.y; z += e.acceleration.z;
+  for (int i = 0; i < 50; i++)
+  {
+    sensors_event_t event;
+    accel.getEvent(&event);
+    x += event.acceleration.x;
+    y += event.acceleration.y;
+    z += event.acceleration.z;
     delay(20);
   }
-  refX = x / 50; refY = y / 50; refZ = z / 50;
-  refPitch = pitchOf(refX, refY, refZ);
-  refRoll  = rollOf(refX, refY, refZ);
-  lastMag = sqrt(refX * refX + refY * refY + refZ * refZ);
+
+  referenceX = x / 50.0f;
+  referenceY = y / 50.0f;
+  referenceZ = z / 50.0f;
+  referencePitch = pitchOf(referenceX, referenceY, referenceZ);
+  referenceRoll = rollOf(referenceX, referenceY, referenceZ);
+  baseX = referenceX;
+  baseY = referenceY;
+  baseZ = referenceZ;
+
+  memset(vibrationBuckets, 0, sizeof(vibrationBuckets));
+  lastBucketSecond = millis() / 1000;
+  calibratedAt = time(nullptr);
+
+  memset(&motionLocal, 0, sizeof(motionLocal));
+  motionLocal.peakAt = calibratedAt;
+  motionShared = motionLocal;
+
+  Serial.println("ADXL345 calibrated");
 }
 
-int readSoilPercent() {
-  digitalWrite(PIN_SOIL_PWR, HIGH);
-  delay(30);
-  long s = 0;
-  for (int i = 0; i < 10; i++) { s += analogRead(PIN_SOIL); delay(2); }
-  digitalWrite(PIN_SOIL_PWR, LOW);
-  int raw = s / 10;
-  Serial.printf("soil raw=%d\n", raw);          // use this to calibrate
-  int pct = map(raw, SOIL_DRY_RAW, SOIL_WET_RAW, 0, 100);
-  return constrain(pct, 0, 100);
-}
+// One ADXL345 sample. Runs only inside adxlTask().
+void sampleMotion()
+{
+  sensors_event_t event;
+  accel.getEvent(&event);
+  const float x = event.acceleration.x;
+  const float y = event.acceleration.y;
+  const float z = event.acceleration.z;
+  const unsigned long now = millis();
+  const uint32_t currentSecond = now / 1000;
 
-void bucketsTick() {
-  uint32_t s = millis() / 1000;
-  if (s == bucketSec) return;
-  for (uint32_t t = bucketSec + 1; t <= s && t <= bucketSec + 60; t++) vibBucket[t % 60] = 0;
-  bucketSec = s;
-}
+  advanceVibrationBuckets(currentSecond);
 
-void readAccel() {                       // every 100 ms
-  sensors_event_t e; accel.getEvent(&e);
-  float x = e.acceleration.x, y = e.acceleration.y, z = e.acceleration.z;
-  sumX += x; sumY += y; sumZ += z; sumN++;
-  float mag = sqrt(x * x + y * y + z * z);
-  bucketsTick();
-  if (fabs(mag - lastMag) > VIB_DELTA) vibBucket[bucketSec % 60]++;
-  lastMag = mag;
-}
+  // Vibration = how far this reading is from the slow baseline, on all 3 axes.
+  const float dx = x - baseX;
+  const float dy = y - baseY;
+  const float dz = z - baseZ;
+  const float dynamic = sqrtf(dx * dx + dy * dy + dz * dz);
 
-void evaluate() {                        // every 1 s
-  // tilt = angle between the average reading and the power-on position
-  if (sumN > 0) {
-    float x = sumX / sumN, y = sumY / sumN, z = sumZ / sumN;
-    sumX = sumY = sumZ = 0; sumN = 0;
-    float dot = x * refX + y * refY + z * refZ;
-    float m1 = sqrt(x * x + y * y + z * z), m2 = sqrt(refX * refX + refY * refY + refZ * refZ);
-    tiltDeg = acos(constrain(dot / (m1 * m2), -1.0f, 1.0f)) * 180.0 / PI;
-    tiltX = pitchOf(x, y, z) - refPitch;
-    tiltY = rollOf(x, y, z) - refRoll;
+  baseX += BASELINE_ALPHA * dx;
+  baseY += BASELINE_ALPHA * dy;
+  baseZ += BASELINE_ALPHA * dz;
+
+  if (dynamic >= vibrationDeltaM_S2 &&
+      now - lastVibrationEventMs >= VIBRATION_MIN_GAP_MS)
+  {
+    lastVibrationEventMs = now;
+    vibrationBuckets[currentSecond % 60]++;
+    motionLocal.perMin++;
+    if (motionLocal.perMin > motionLocal.peakPerMin)
+    {
+      motionLocal.peakPerMin = motionLocal.perMin;
+      motionLocal.peakAt = time(nullptr);
+    }
   }
-  tiltHold = (tiltDeg >= tiltLimit) ? tiltHold + 1 : 0;
+  motionLocal.sustained = hasSustainedVibration(currentSecond);
 
-  bucketsTick();
-  vibPerMin = 0;
-  for (int i = 0; i < 60; i++) vibPerMin += vibBucket[i];
+  // Tilt comes from the baseline, so shaking is not mistaken for tilting.
+  motionLocal.tiltX = pitchOf(baseX, baseY, baseZ) - referencePitch;
+  motionLocal.tiltY = rollOf(baseX, baseY, baseZ) - referenceRoll;
+  const float baseMag = sqrtf(baseX * baseX + baseY * baseY + baseZ * baseZ);
+  const float refMag =
+      sqrtf(referenceX * referenceX + referenceY * referenceY + referenceZ * referenceZ);
+  if (baseMag > 0.01f && refMag > 0.01f)
+  {
+    const float dot = baseX * referenceX + baseY * referenceY + baseZ * referenceZ;
+    motionLocal.tiltDegrees =
+        acosf(constrain(dot / (baseMag * refMag), -1.0f, 1.0f)) * 180.0f / PI;
+  }
 
-  soilPct = readSoilPercent();
-
-  int soilHigh = soilWatch + (soilCritical - soilWatch) / 2;
-  Level lv = LV_STABLE;
-  if (soilPct >= soilCritical) lv = LV_CRITICAL;
-  else if (soilPct >= soilHigh) lv = LV_HIGH;
-  else if (soilPct >= soilWatch) lv = LV_WATCH;
-
-  bool moving = (tiltHold >= TILT_HOLD_SECONDS) || (vibPerMin >= vibLimit);
-  if (moving) lv = (soilPct >= soilWatch) ? LV_CRITICAL : (lv > LV_HIGH ? lv : LV_HIGH);
-
-  if (lv > level && lv >= LV_WATCH) historyPending = true;   // log escalations
-  level = lv;
-
-  digitalWrite(PIN_LED_G, level == LV_STABLE);
-  digitalWrite(PIN_LED_Y, level == LV_WATCH || level == LV_HIGH);
-  digitalWrite(PIN_LED_R, level == LV_CRITICAL || level == LV_HIGH);
-
-  Serial.printf("soil=%d%% tilt=%.1f vib=%d/min level=%s\n",
-                soilPct, tiltDeg, vibPerMin, LEVEL_NAME[level]);
+  portENTER_CRITICAL(&motionMux);
+  motionShared = motionLocal;
+  portEXIT_CRITICAL(&motionMux);
 }
 
-// Speaker: no delay(), so sensors and Firebase keep running while it sounds.
-// Critical = siren sweep, High = beeps, Stable/Watch = silent.
-void updateSound() {
-  static uint32_t last = 0;
-  uint32_t t = millis();
-  if (t - last < 20) return;
-  last = t;
-  if (!sirenEnabled) { noTone(PIN_SPK); return; }
-  if (level == LV_CRITICAL)  tone(PIN_SPK, 800 + (t / 3) % 1000);
-  else if (level == LV_HIGH) { if (t % 1000 < 200) tone(PIN_SPK, 1800); else noTone(PIN_SPK); }
-  else noTone(PIN_SPK);
-}
-
-void startupBeep() {                      // three rising notes = speaker works
-  int notes[] = {523, 659, 784};
-  for (int i = 0; i < 3; i++) { tone(PIN_SPK, notes[i]); delay(120); }
-  noTone(PIN_SPK);
-}
-
-void fillJson(FirebaseJson& j) {
-  j.set("nodeId", NODE_ID);
-  j.set("level", LEVEL_NAME[level]);
-  j.set("soil", soilPct);
-  j.set("tilt", tiltDeg);
-  j.set("tiltX", tiltX);
-  j.set("tiltY", tiltY);
-  j.set("vibration", vibPerMin);
-  j.set("rssi", WiFi.RSSI());
-  j.set("ts/.sv", "timestamp");          // server time, so no clock needed
-}
-
-void sendToFirebase() {
-  FirebaseJson j; fillJson(j);
-  if (!Firebase.RTDB.setJSON(&fbdo, (base() + "/status").c_str(), &j))
-    Serial.println(fbdo.errorReason());
-  if (historyPending) {
-    FirebaseJson h; fillJson(h); h.set("kind", "landslide");
-    if (Firebase.RTDB.pushJSON(&fbdo, (base() + "/history").c_str(), &h)) historyPending = false;
+void adxlTask(void *)
+{
+  for (;;)
+  {
+    sampleMotion();
+    vTaskDelay(pdMS_TO_TICKS(ADXL_SAMPLE_INTERVAL_MS));
   }
 }
 
-void fetchThresholds() {
-  String p = base() + "/thresholds/";
-  if (Firebase.RTDB.getInt(&fbdo,   (p + "soilWatchPercent").c_str()))    soilWatch    = fbdo.intData();
-  if (Firebase.RTDB.getInt(&fbdo,   (p + "soilCriticalPercent").c_str())) soilCritical = fbdo.intData();
-  if (Firebase.RTDB.getInt(&fbdo,   (p + "vibrationPerMin").c_str()))     vibLimit     = fbdo.intData();
-  if (Firebase.RTDB.getFloat(&fbdo, (p + "tiltDegrees").c_str()))         tiltLimit    = fbdo.floatData();
-  if (Firebase.RTDB.getBool(&fbdo,  (p + "sirenEnabled").c_str()))        sirenEnabled = fbdo.boolData();
+// Copies the latest motion state from the task into the globals used by loop().
+void syncMotionState()
+{
+  if (!adxlReady)
+    return;
+
+  MotionState s;
+  portENTER_CRITICAL(&motionMux);
+  s = motionShared;
+  portEXIT_CRITICAL(&motionMux);
+
+  tiltX = s.tiltX;
+  tiltY = s.tiltY;
+  tiltDegrees = s.tiltDegrees;
+  vibrationPerMin = s.perMin;
+  vibrationPeakPerMin = s.peakPerMin;
+  sustainedVibration = s.sustained;
+  vibrationPeakAt = s.peakAt;
 }
 
-void setup() {
+// ---------------------------------------------------------------- setup / loop
+void setup()
+{
   Serial.begin(115200);
-  pinMode(PIN_SOIL_PWR, OUTPUT); digitalWrite(PIN_SOIL_PWR, LOW);
-  pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_Y, OUTPUT); pinMode(PIN_LED_R, OUTPUT);
   analogReadResolution(12);
-  pinMode(PIN_SPK, OUTPUT);
-  startupBeep();
 
-  Wire.begin(21, 22);
-  if (!accel.begin(0x53)) {
-    Serial.println("ADXL345 not found - check wiring");
-    while (true) { digitalWrite(PIN_LED_R, !digitalRead(PIN_LED_R)); delay(200); }
+  Wire.begin(PIN_ADXL_SDA, PIN_ADXL_SCL);
+  Wire.setClock(400000);
+  adxlReady = accel.begin(0x53) || accel.begin(0x1D);
+  if (adxlReady)
+  {
+    accel.setRange(ADXL345_RANGE_4_G);
+    accel.setDataRate(ADXL345_DATARATE_100_HZ);
   }
-  accel.setRange(ADXL345_RANGE_4_G);
-  Serial.println("Keep the node still: calibrating tilt...");
-  calibrateTilt();
+  else
+  {
+    Serial.println("ADXL345 not found; check I2C wiring and address");
+  }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) delay(500);
+  connectToWiFi();
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    syncClock();
+    setupFirebase();
+    refreshThresholds(true);
+  }
 
+  // Calibrate last, so the timestamps are valid and the node is still after setup.
+  if (adxlReady)
+  {
+    calibrateADXL();
+    xTaskCreatePinnedToCore(adxlTask, "adxl", 4096, nullptr, 2, nullptr, 1);
+  }
+
+  Serial.println("GeoPulse sensor monitor started");
+}
+
+int readSoilRaw()
+{
+  long sum = 0;
+  for (int i = 0; i < 20; i++)
+  {
+    sum += analogRead(PIN_SOIL);
+    delay(2);
+  }
+  return sum / 20;
+}
+
+void loop()
+{
+  const unsigned long now = millis();
+
+  if (Serial.available() && Serial.read() == 'r')
+  {
+    rawMin = 4095;
+    rawMax = 0;
+    Serial.println("min/max reset");
+  }
+
+  syncMotionState();
+
+  if (WiFi.status() == WL_CONNECTED &&
+      now - lastThresholdRefreshMs >= THRESHOLD_REFRESH_INTERVAL_MS)
+  {
+    refreshThresholds(false);
+  }
+
+  if (now - lastSoilReadMs >= 1000)
+  {
+    lastSoilReadMs = now;
+    soilRaw = readSoilRaw();
+    rawMin = min(rawMin, soilRaw);
+    rawMax = max(rawMax, soilRaw);
+    soilPercent = constrain(map(soilRaw, SOIL_DRY_RAW, SOIL_WET_RAW, 0, 100), 0, 100);
+
+    syncMotionState();
+    const char *state = soilPercent < 30 ? "DRY" : (soilPercent < 70 ? "MOIST" : "WET");
+    Serial.printf("soil raw=%4d %3d%% %-5s | tilt=%5.1f X=%5.1f Y=%5.1f | vibration=%d/min%s\n",
+                  soilRaw, soilPercent, state, tiltDegrees, tiltX, tiltY, vibrationPerMin,
+                  sustainedVibration ? " SUSTAINED" : "");
+  }
+
+  if (now - lastUploadMs >= UPLOAD_INTERVAL_MS)
+  {
+    syncMotionState();
+    const bool uploaded = uploadStatus(soilPercent);
+    lastUploadMs = millis();
+    if (uploaded &&
+        (lastHistoryUploadMs == 0 || now - lastHistoryUploadMs >= SENSOR_HISTORY_INTERVAL_MS))
+    {
+      syncMotionState();
+      if (uploadSensorReading(soilPercent))
+        lastHistoryUploadMs = now;
+    }
+  }
+
+  delay(5);
+}
+
+// ---------------------------------------------------------------- Firebase / Wi-Fi
+void setupFirebase()
+{
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
-  config.token_status_callback = tokenStatusCallback;
-  Firebase.reconnectNetwork(true);
+  Firebase.reconnectWiFi(true);
   Firebase.begin(&config, &auth);
+  Serial.println("Firebase client started");
 }
 
-void loop() {
-  uint32_t now = millis();
-  if (now - tRead >= 100)  { tRead = now; readAccel(); }
-  if (now - tEval >= 1000) { tEval = now; evaluate(); }   // LEDs work offline
-  updateSound();                                          // speaker works offline too
+void syncClock()
+{
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  time_t now = time(nullptr);
+  for (int attempt = 0; attempt < 20 && now < 1700000000; attempt++)
+  {
+    delay(500);
+    now = time(nullptr);
+  }
+  if (now >= 1700000000)
+  {
+    Serial.println("Clock synchronized");
+  }
+  else
+  {
+    Serial.println("Clock sync failed; Firebase uploads need a valid timestamp");
+  }
+}
 
-  bool online = WiFi.status() == WL_CONNECTED && Firebase.ready();
-  if (online && now - tSend >= 3000)  { tSend = now; sendToFirebase(); }
-  if (online && now - tThr >= 30000)  { tThr = now;  fetchThresholds(); }
+const char *levelForSensors(int soilValue)
+{
+  const int soilHighPercent =
+      (soilWatchPercent + soilCriticalPercent + 1) / 2;
+  int rank = 0;
+  if (soilValue >= soilWatchPercent)
+    rank = 1;
+  if (soilValue >= soilHighPercent)
+    rank = 2;
+  if (soilValue >= soilCriticalPercent)
+    rank = 3;
+  if (adxlReady && sustainedVibration &&
+      vibrationPerMin >= vibrationThresholdPerMin)
+    rank = max(rank, 3);
+  if (adxlReady && tiltDegrees >= tiltThresholdDegrees)
+    rank = max(rank, 3);
+  switch (rank)
+  {
+  case 3:
+    return "critical";
+  case 2:
+    return "high";
+  case 1:
+    return "watch";
+  default:
+    return "stable";
+  }
+}
+
+const char *kindForSensors(int soilValue)
+{
+  const bool soilTriggered = soilValue >= soilCriticalPercent;
+  const bool vibrationTriggered = adxlReady && sustainedVibration &&
+                                  vibrationPerMin >= vibrationThresholdPerMin;
+  const bool tiltTriggered = adxlReady && tiltDegrees >= tiltThresholdDegrees;
+  const bool motionTriggered = vibrationTriggered || tiltTriggered;
+  if (soilTriggered && motionTriggered)
+    return "combined";
+  if (vibrationTriggered)
+    return "earthquake";
+  if (tiltTriggered)
+    return "groundMovement";
+  return "landslide";
+}
+
+bool refreshThresholds(bool force)
+{
+  const unsigned long now = millis();
+  if (!force && now - lastThresholdRefreshMs < THRESHOLD_REFRESH_INTERVAL_MS)
+  {
+    return true;
+  }
+  lastThresholdRefreshMs = now;
+  if (!Firebase.ready())
+    return false;
+
+  if (!Firebase.RTDB.getJSON(&fbdo, THRESHOLDS_PATH))
+  {
+    if (fbdo.errorReason().indexOf("path not exist") < 0)
+    {
+      Serial.print("Threshold read failed: ");
+      Serial.println(fbdo.errorReason());
+    }
+    return false;
+  }
+
+  FirebaseJson &json = fbdo.jsonObject();
+  FirebaseJsonData value;
+  int nextSoilWatch = soilWatchPercent;
+  int nextSoilCritical = soilCriticalPercent;
+  int nextVibrationThreshold = vibrationThresholdPerMin;
+  float nextTiltThreshold = tiltThresholdDegrees;
+  float nextVibrationDelta = vibrationDeltaM_S2;
+
+  if (json.get(value, "soilWatchPercent") && value.success)
+    nextSoilWatch = value.intValue;
+  if (json.get(value, "soilCriticalPercent") && value.success)
+    nextSoilCritical = value.intValue;
+  if (json.get(value, "vibrationPerMin") && value.success)
+    nextVibrationThreshold = value.intValue;
+  if (json.get(value, "tiltDegrees") && value.success)
+    nextTiltThreshold = value.floatValue;
+  if (json.get(value, "sensitivity") && value.success)
+  {
+    // Distance from the baseline in m/s^2: smaller = more sensitive.
+    if (value.stringValue == "low")
+      nextVibrationDelta = 1.5f;
+    else if (value.stringValue == "medium")
+      nextVibrationDelta = 1.0f;
+    else if (value.stringValue == "high")
+      nextVibrationDelta = 0.6f;
+  }
+
+  if (nextSoilWatch < 1 || nextSoilCritical > 100 ||
+      nextSoilWatch >= nextSoilCritical ||
+      nextVibrationThreshold < 1 || nextVibrationThreshold > 60 ||
+      nextTiltThreshold < 0.1f || nextTiltThreshold > 10.0f)
+  {
+    Serial.println("Threshold values invalid; retaining previous settings");
+    return false;
+  }
+
+  soilWatchPercent = nextSoilWatch;
+  soilCriticalPercent = nextSoilCritical;
+  vibrationThresholdPerMin = nextVibrationThreshold;
+  tiltThresholdDegrees = nextTiltThreshold;
+  vibrationDeltaM_S2 = nextVibrationDelta;
+  Serial.println("Thresholds refreshed from Firebase");
+  return true;
+}
+
+void addSensorFields(FirebaseJson &data, int soilValue)
+{
+  data.set("soil", soilValue);
+  data.set("adxlReady", adxlReady);
+  data.set("soilWatchPercent", soilWatchPercent);
+  data.set("soilCriticalPercent", soilCriticalPercent);
+  data.set("vibrationThresholdPerMin", vibrationThresholdPerMin);
+  data.set("tiltThresholdDegrees", tiltThresholdDegrees);
+  if (adxlReady)
+  {
+    data.set("tilt", tiltDegrees);
+    data.set("tiltX", tiltX);
+    data.set("tiltY", tiltY);
+    data.set("vibration", vibrationPerMin);
+    data.set("sustainedVibration", sustainedVibration);
+    data.set("vibrationPeakPerMin", vibrationPeakPerMin);
+    data.set("vibrationPeakAt", static_cast<double>(vibrationPeakAt) * 1000.0);
+    data.set("calibratedAt", static_cast<double>(calibratedAt) * 1000.0);
+  }
+  data.set("rssi", WiFi.RSSI());
+  data.set("ts", static_cast<double>(time(nullptr)) * 1000.0);
+}
+
+bool uploadStatus(int soilValue)
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("Skipping Firebase upload: Wi-Fi disconnected");
+    return false;
+  }
+  if (time(nullptr) < 1700000000)
+  {
+    Serial.println("Skipping Firebase upload: clock is not synchronized");
+    return false;
+  }
+  if (!Firebase.ready())
+  {
+    Serial.println("Waiting for Firebase authentication");
+    return false;
+  }
+
+  FirebaseJson status;
+  status.set("nodeId", "GP-01");
+  status.set("name", "GeoPulse Node GP-01");
+  status.set("board", "ESP32");
+  status.set("firmware", "1.1.0");
+  const char *level = levelForSensors(soilValue);
+  status.set("level", level);
+  addSensorFields(status, soilValue);
+
+  if (Firebase.RTDB.setJSON(&fbdo, STATUS_PATH, &status))
+  {
+    Serial.println("Firebase status uploaded");
+    const char *currentKind = strcmp(level, "stable") == 0
+                                  ? lastHazardKind
+                                  : kindForSensors(soilValue);
+    const bool levelChanged = strcmp(lastUploadedLevel, level) != 0;
+    const bool hazardChanged = strcmp(level, "stable") != 0 &&
+                               strcmp(lastHazardKind, currentKind) != 0;
+    if (levelChanged || hazardChanged)
+    {
+      if (lastUploadedLevel[0] != '\0' || strcmp(level, "stable") != 0)
+      {
+        const char *eventKind = currentKind;
+        FirebaseJson event;
+        event.set("kind", eventKind);
+        event.set("level", level);
+        addSensorFields(event, soilValue);
+        if (!Firebase.RTDB.pushJSON(&fbdo, HISTORY_PATH, &event))
+        {
+          if (lastHistoryErrorLogMs == 0 ||
+              millis() - lastHistoryErrorLogMs >= 30000)
+          {
+            Serial.print("Alert history upload failed: ");
+            Serial.println(fbdo.errorReason());
+            lastHistoryErrorLogMs = millis();
+          }
+          return true;
+        }
+        if (strcmp(level, "stable") == 0)
+        {
+          lastHazardKind[0] = '\0';
+        }
+        else
+        {
+          strncpy(lastHazardKind, eventKind, sizeof(lastHazardKind) - 1);
+          lastHazardKind[sizeof(lastHazardKind) - 1] = '\0';
+        }
+      }
+      strncpy(lastUploadedLevel, level, sizeof(lastUploadedLevel) - 1);
+      lastUploadedLevel[sizeof(lastUploadedLevel) - 1] = '\0';
+    }
+    return true;
+  }
+  else
+  {
+    Serial.print("Firebase upload failed: ");
+    Serial.println(fbdo.errorReason());
+    return false;
+  }
+}
+
+bool uploadSensorReading(int soilValue)
+{
+  FirebaseJson reading;
+  addSensorFields(reading, soilValue);
+  if (Firebase.RTDB.pushJSON(&fbdo, READINGS_PATH, &reading))
+  {
+    Serial.println("Sensor history uploaded");
+    return true;
+  }
+  Serial.print("Sensor history upload failed: ");
+  Serial.println(fbdo.errorReason());
+  return false;
+}
+
+void connectToWiFi()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  Serial.print("Connecting to Wi-Fi");
+  unsigned long startedAt = millis();
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - startedAt < 20000)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.print("\nConnected. ESP32 IP: ");
+    Serial.println(WiFi.localIP());
+  }
+  else
+  {
+    Serial.println("\nWi-Fi connection failed. Check secrets.h and try again.");
+  }
 }

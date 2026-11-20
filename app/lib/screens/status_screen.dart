@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../data/status_repository.dart';
 import '../models/device_status.dart';
 import '../models/sensor.dart';
 import '../state/shell_scope.dart';
@@ -11,20 +10,18 @@ import '../theme/app_motion.dart';
 import '../theme/level_style.dart';
 import '../utils/alert_text.dart';
 import '../utils/time_format.dart';
-import '../widgets/app_button.dart';
 import '../widgets/app_scaffold.dart';
 import '../widgets/common.dart';
-import '../widgets/confirm_dialog.dart';
 import '../widgets/pressable.dart';
 import '../widgets/sensor_card.dart';
 import '../widgets/status_arch.dart';
 
 /// The Status dashboard: overall alert level, live sensor readings and the
-/// local siren. Matches the Figma frames "Status · Stable / Watch (node
+/// device outputs. Matches the Figma frames "Status · Stable / Watch (node
 /// offline) / High (landslide)".
 ///
 /// It reads the live reading from [StatusScope], so it rebuilds whenever
-/// the reading changes (every 2 s).
+/// the node reports an update.
 class StatusScreen extends StatelessWidget {
   const StatusScreen({super.key});
 
@@ -39,11 +36,15 @@ class StatusScreen extends StatelessWidget {
       // The soft arch behind the icon, title and pill. It sits in the
       // screen-wide Stack because its `top: 196` is measured from the top
       // of the screen; the scrolling content is drawn on top of it.
-      background: status == null ? null : StatusArch(tint: LevelStyle.of(status.level).glow),
+      background: status == null
+          ? null
+          : StatusArch(tint: LevelStyle.of(status.level).glow),
       body: status == null
           ? (controller.error == null
-              ? const Center(child: CircularProgressIndicator(color: AppColors.brand))
-              : Center(child: Text(controller.error!)))
+                ? const Center(
+                    child: CircularProgressIndicator(color: AppColors.brand),
+                  )
+                : Center(child: Text(controller.error!)))
           // RefreshIndicator adds pull-to-refresh. A refresh is a routine
           // update: same level, numbers change, no animation.
           : RefreshIndicator(
@@ -67,27 +68,19 @@ class _Dashboard extends StatelessWidget {
 
   final DeviceStatus status;
 
-  Future<void> _testAlarm(BuildContext context) async {
-    final confirmed = await showConfirmDialog(
-      context,
-      title: 'Test the site alarm?',
-      message: 'The siren and red LED at Node ${status.nodeId} will turn on for '
-          '5 seconds. People near the site will hear it.',
-      confirmLabel: 'Test alarm',
-    );
-    if (!confirmed || !context.mounted) return;
-    await testSiren();
-    if (context.mounted) showMessage(context, 'Test alarm sent to Node ${status.nodeId}.');
-  }
-
   @override
   Widget build(BuildContext context) {
     final s = status;
     final colorChange = AppMotion.levelChangeFor(context);
     final shell = ShellScope.maybeOf(context)?.actions;
-    void openSensor(SensorKind kind) => shell?.selectTab(AppTab.sensors, sensor: kind);
-    final lastKnown = s.online ? null : 'last known ${formatClock(s.lastUpdate)}';
-    final tiltWord = s.tiltLevel == StatusLevel.stable ? 'Normal' : 'Over limit';
+    void openSensor(SensorKind kind) =>
+        shell?.selectTab(AppTab.sensors, sensor: kind);
+    final lastKnown = s.online
+        ? null
+        : 'last known ${formatClock(s.lastUpdate)}';
+    final tiltWord = s.tiltLevel == StatusLevel.stable
+        ? 'Normal'
+        : 'Over limit';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -108,7 +101,9 @@ class _Dashboard extends StatelessWidget {
         _LevelFade(
           level: s.level,
           duration: colorChange,
-          child: Center(child: SizedBox(width: 72, height: 72, child: _heroIcon(s.level))),
+          child: Center(
+            child: SizedBox(width: 72, height: 72, child: _heroIcon(s.level)),
+          ),
         ),
         const SizedBox(height: 10),
         _LevelFade(
@@ -132,7 +127,9 @@ class _Dashboard extends StatelessWidget {
           child: Center(
             child: _NextStepPill(
               level: s.level,
-              onTap: s.level == StatusLevel.critical ? shell?.openCriticalAlert : null,
+              onTap: s.level == StatusLevel.critical
+                  ? shell?.openCriticalAlert
+                  : null,
             ),
           ),
         ),
@@ -141,29 +138,49 @@ class _Dashboard extends StatelessWidget {
           'Activity Status',
           color: AppColors.brand,
           trailing: Text(
-            s.online ? 'Updated ${formatAgo(s.lastUpdate)}' : 'Last data ${formatClock(s.lastUpdate)}',
-            style: const TextStyle(fontSize: 11, height: _normalLineHeight, color: AppColors.muted),
+            s.online
+                ? 'Updated ${formatAgo(s.lastUpdate)}'
+                : 'Last data ${formatClock(s.lastUpdate)}',
+            style: const TextStyle(
+              fontSize: 11,
+              height: _normalLineHeight,
+              color: AppColors.muted,
+            ),
           ),
         ),
         SensorCard(
-          icon: _maskIcon('assets/icons/soil.png', _accent(s.soilLevel) ?? AppColors.ink),
+          icon: _maskIcon(
+            'assets/icons/soil.png',
+            _accent(s.soilLevel) ?? AppColors.ink,
+          ),
           title: 'Soil Moisture Status',
           value: '${s.soilMoisturePercent}%',
-          caption: lastKnown == null ? _soilCaption(s.soilLevel) : '${_levelWord(s.soilLevel)} · $lastKnown',
+          caption: lastKnown == null
+              ? _soilCaption(s.soilLevel, s)
+              : '${_levelWord(s.soilLevel)} · $lastKnown',
           valueColor: _valueColor(s.soilLevel),
           accentColor: _accent(s.soilLevel),
           onTap: () => openSensor(SensorKind.soil),
         ),
         const SizedBox(height: 10),
         SensorCard(
-          icon: _maskIcon('assets/icons/seismic.png', _accent(s.vibrationLevel) ?? AppColors.ink),
+          icon: _maskIcon(
+            'assets/icons/seismic.png',
+            _accent(s.vibrationLevel) ?? AppColors.ink,
+          ),
           title: 'Seismic Activity Status',
-          value: s.vibrationLevel == StatusLevel.critical ? 'Strong' : 'Normal',
-          caption: lastKnown != null
+          value: !s.adxlReady
+              ? 'Unavailable'
+              : s.vibrationLevel == StatusLevel.critical
+              ? 'Strong'
+              : 'Normal',
+          caption: !s.adxlReady
+              ? 'ADXL345 not detected'
+              : lastKnown != null
               ? '${s.vibrationPerMin}/min · $lastKnown'
               : s.vibrationPerMin == 0
-                  ? 'Vibration 0/min · SW‑420'
-                  : 'Vibration ${s.vibrationPerMin}/min · limit ${DeviceStatus.vibrationLimitPerMin}/min',
+              ? 'Vibration 0/min · ADXL345'
+              : 'Vibration ${s.vibrationPerMin}/min · limit ${s.vibrationThresholdPerMin}/min',
           valueColor: _valueColor(s.vibrationLevel),
           accentColor: _accent(s.vibrationLevel),
           onTap: () => openSensor(SensorKind.vibration),
@@ -179,41 +196,50 @@ class _Dashboard extends StatelessWidget {
                 : ColorFilter.mode(_accent(s.tiltLevel)!, BlendMode.srcIn),
           ),
           title: 'Ground Movement Status',
-          value: '${s.tiltDegrees.toStringAsFixed(1)}°',
-          caption: lastKnown == null
-              ? '$tiltWord · MPU6050 limit ${DeviceStatus.tiltLimitDegrees.toStringAsFixed(1)}°'
+          value: s.adxlReady
+              ? '${s.tiltDegrees.toStringAsFixed(1)}°'
+              : 'Unavailable',
+          caption: !s.adxlReady
+              ? 'ADXL345 not detected'
+              : lastKnown == null
+              ? '$tiltWord · ADXL345 limit ${s.tiltThresholdDegrees.toStringAsFixed(1)}°'
               : '$tiltWord · $lastKnown',
           valueColor: _valueColor(s.tiltLevel),
           accentColor: _accent(s.tiltLevel),
           onTap: () => openSensor(SensorKind.tilt),
         ),
         const SizedBox(height: 14),
-        _AlarmCard(status: s, onTestAlarm: () => _testAlarm(context)),
+        const _AlarmCard(),
       ],
     );
   }
 
   static Widget _heroIcon(StatusLevel level) => switch (level) {
-        StatusLevel.stable => SvgPicture.asset('assets/icons/shield_check.svg', width: 72, height: 72),
-        StatusLevel.watch || StatusLevel.high =>
-          Icon(Icons.warning_rounded, size: 76, color: LevelStyle.of(level).strong),
-        StatusLevel.critical => Center(
-            child: SvgPicture.asset(
-              'assets/icons/siren.svg',
-              width: 64,
-              colorFilter: const ColorFilter.mode(AppColors.criticalContainer, BlendMode.srcIn),
-            ),
-          ),
-      };
+    StatusLevel.stable => SvgPicture.asset(
+      'assets/icons/shield_check.svg',
+      width: 72,
+      height: 72,
+    ),
+    StatusLevel.watch || StatusLevel.high => Icon(
+      Icons.warning_rounded,
+      size: 76,
+      color: LevelStyle.of(level).strong,
+    ),
+    StatusLevel.critical => const Icon(
+      Icons.warning_amber_rounded,
+      size: 72,
+      color: AppColors.criticalContainer,
+    ),
+  };
 
   /// A single-colour PNG icon painted in [color].
   static Widget _maskIcon(String asset, Color color) => Image.asset(
-        asset,
-        width: 52,
-        height: 52,
-        color: color,
-        colorBlendMode: BlendMode.srcIn,
-      );
+    asset,
+    width: 52,
+    height: 52,
+    color: color,
+    colorBlendMode: BlendMode.srcIn,
+  );
 
   /// Sensors past normal get a coloured border and icon (Figma Watch/High).
   static Color? _accent(StatusLevel level) =>
@@ -223,23 +249,32 @@ class _Dashboard extends StatelessWidget {
       level == StatusLevel.stable ? AppColors.ink : LevelStyle.of(level).strong;
 
   static String _levelWord(StatusLevel level) => switch (level) {
-        StatusLevel.stable => 'Normal',
-        StatusLevel.watch => 'Watch',
-        StatusLevel.high => 'High',
-        StatusLevel.critical => 'Critical',
-      };
+    StatusLevel.stable => 'Normal',
+    StatusLevel.watch => 'Watch',
+    StatusLevel.high => 'High',
+    StatusLevel.critical => 'Critical',
+  };
 
-  static String _soilCaption(StatusLevel level) => switch (level) {
-        StatusLevel.stable || StatusLevel.watch =>
-          '${_levelWord(level)} · warning at ${DeviceStatus.soilWarningPercent}%',
-        StatusLevel.high => 'High · critical at ${DeviceStatus.soilCriticalPercent}%',
-        StatusLevel.critical => 'Critical · above ${DeviceStatus.soilCriticalPercent}%',
-      };
+  static String _soilCaption(
+    StatusLevel level,
+    DeviceStatus status,
+  ) => switch (level) {
+    StatusLevel.stable || StatusLevel.watch =>
+      '${_levelWord(level)} · warning at ${status.soilWatchThresholdPercent}%',
+    StatusLevel.high =>
+      'High · critical at ${status.soilCriticalThresholdPercent}%',
+    StatusLevel.critical =>
+      'Critical · above ${status.soilCriticalThresholdPercent}%',
+  };
 }
 
 /// Crossfades [child] when [level] changes: a fade in place, no movement.
 class _LevelFade extends StatelessWidget {
-  const _LevelFade({required this.level, required this.duration, required this.child});
+  const _LevelFade({
+    required this.level,
+    required this.duration,
+    required this.child,
+  });
 
   final StatusLevel level;
   final Duration duration;
@@ -258,7 +293,7 @@ class _LevelFade extends StatelessWidget {
   }
 }
 
-/// "● Node GP‑01 · Live   ·   GSM 3/4   ·   Battery 82%"
+/// Live node metadata; values absent from the firmware are not estimated.
 class _InfoLine extends StatelessWidget {
   const _InfoLine({required this.status});
 
@@ -267,10 +302,15 @@ class _InfoLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = status;
-    final text = 'Node ${s.nodeId} · Live'
-        '   ·   GSM ${s.gsmBars}/${DeviceStatus.maxGsmBars}'
-        '   ·   Battery ${s.batteryPercent}%';
-    final dot = s.level == StatusLevel.stable ? null : LevelStyle.of(s.level).strong;
+    final details = <String>[
+      'Node ${s.nodeId} · Live',
+      if (s.wifiBars != null) 'Wi-Fi ${s.wifiBars}/${DeviceStatus.maxWifiBars}',
+      if (s.batteryPercent != null) 'Battery ${s.batteryPercent}%',
+    ];
+    final text = details.join('   ·   ');
+    final dot = s.level == StatusLevel.stable
+        ? null
+        : LevelStyle.of(s.level).strong;
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -279,7 +319,9 @@ class _InfoLine extends StatelessWidget {
           'assets/icons/dot.svg',
           width: 8,
           height: 8,
-          colorFilter: dot == null ? null : ColorFilter.mode(dot, BlendMode.srcIn),
+          colorFilter: dot == null
+              ? null
+              : ColorFilter.mode(dot, BlendMode.srcIn),
         ),
         const SizedBox(width: 6),
         Flexible(
@@ -312,11 +354,18 @@ class _OfflineBanner extends StatelessWidget {
       constraints: const BoxConstraints(minHeight: 40),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       alignment: Alignment.centerLeft,
-      decoration: BoxDecoration(color: AppColors.banner, borderRadius: BorderRadius.circular(10)),
+      decoration: BoxDecoration(
+        color: AppColors.banner,
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Text(
-        'Node offline since ${formatClock(since)}. The siren and LEDs at the site still '
-        'work without internet.',
-        style: const TextStyle(fontSize: 12, height: 14 / 12, fontWeight: FontWeight.w500, color: AppColors.surface),
+        'Node offline since ${formatClock(since)}. Live readings are unavailable until it reconnects.',
+        style: const TextStyle(
+          fontSize: 12,
+          height: 14 / 12,
+          fontWeight: FontWeight.w500,
+          color: AppColors.surface,
+        ),
       ),
     );
   }
@@ -333,41 +382,61 @@ class _NextStepPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (String label, Widget icon, Color bg, Color fg, Color border) = switch (level) {
+    final (
+      String label,
+      Widget icon,
+      Color bg,
+      Color fg,
+      Color border,
+    ) = switch (level) {
       StatusLevel.stable => (
-          'No action needed',
-          SizedBox(
-            width: 16,
-            height: 16,
-            child: Stack(children: [
-              Positioned(left: 1.567, top: 2.9, child: SvgPicture.asset('assets/icons/check.svg')),
-            ]),
+        'No action needed',
+        SizedBox(
+          width: 16,
+          height: 16,
+          child: Stack(
+            children: [
+              Positioned(
+                left: 1.567,
+                top: 2.9,
+                child: SvgPicture.asset('assets/icons/check.svg'),
+              ),
+            ],
           ),
-          AppColors.surface,
-          AppColors.ink,
-          AppColors.outline,
         ),
+        AppColors.surface,
+        AppColors.ink,
+        AppColors.outline,
+      ),
       StatusLevel.watch => (
-          'Prepare your go-bag and route',
-          const Icon(Icons.work_outline_rounded, size: 16, color: AppColors.watchStrong),
-          AppColors.surface,
-          AppColors.watchStrong,
-          AppColors.watchStrong,
+        'Prepare your go-bag and route',
+        const Icon(
+          Icons.work_outline_rounded,
+          size: 16,
+          color: AppColors.watchStrong,
         ),
+        AppColors.surface,
+        AppColors.watchStrong,
+        AppColors.watchStrong,
+      ),
       StatusLevel.high => (
-          'Get ready to evacuate',
-          const Icon(Icons.logout_rounded, size: 16, color: AppColors.onBrand),
-          AppColors.brand,
-          AppColors.onBrand,
-          AppColors.brand,
-        ),
+        'Get ready to evacuate',
+        const Icon(Icons.logout_rounded, size: 16, color: AppColors.onBrand),
+        AppColors.brand,
+        AppColors.onBrand,
+        AppColors.brand,
+      ),
       StatusLevel.critical => (
-          'Open alert',
-          const Icon(Icons.open_in_full_rounded, size: 16, color: AppColors.criticalOn),
-          AppColors.criticalContainer,
-          AppColors.criticalOn,
-          AppColors.criticalContainer,
+        'Open alert',
+        const Icon(
+          Icons.open_in_full_rounded,
+          size: 16,
+          color: AppColors.criticalOn,
         ),
+        AppColors.criticalContainer,
+        AppColors.criticalOn,
+        AppColors.criticalContainer,
+      ),
     };
 
     final pill = Container(
@@ -387,7 +456,12 @@ class _NextStepPill extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 14, height: _normalLineHeight, fontWeight: FontWeight.w700, color: fg),
+              style: TextStyle(
+                fontSize: 14,
+                height: _normalLineHeight,
+                fontWeight: FontWeight.w700,
+                color: fg,
+              ),
             ),
           ),
         ],
@@ -397,30 +471,14 @@ class _NextStepPill extends StatelessWidget {
   }
 }
 
-/// The "Local alarm" card: what's sounding at the site, SMS progress, and a
-/// Test alarm button when all is calm.
+/// Site outputs are not reported by the currently connected firmware.
 class _AlarmCard extends StatelessWidget {
-  const _AlarmCard({required this.status, required this.onTestAlarm});
-
-  final DeviceStatus status;
-  final VoidCallback onTestAlarm;
+  const _AlarmCard();
 
   @override
   Widget build(BuildContext context) {
-    final s = status;
-    final sms = 'SMS sent ${s.smsSent} of ${s.smsTotal}';
-    final String text;
-    if (s.sirenOn) {
-      text = 'Siren on at the site · $sms';
-    } else if (s.level == StatusLevel.watch) {
-      text = 'Buzzer pulsing at the site · $sms';
-    } else {
-      text = 'Siren on standby · ${s.smsSent > 0 ? sms : 'on-site LED normal'}';
-    }
-    final color = s.level == StatusLevel.stable ? AppColors.ink : LevelStyle.of(s.level).strong;
-
     return Container(
-      constraints: const BoxConstraints(minHeight: 64), // grows with big text
+      constraints: const BoxConstraints(minHeight: 64),
       padding: const EdgeInsets.fromLTRB(15, 6, 13, 6),
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -433,33 +491,26 @@ class _AlarmCard extends StatelessWidget {
             width: 20,
             height: 20,
             child: Center(
-              child: SvgPicture.asset(
-                'assets/icons/siren.svg',
-                colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+              child: const Icon(
+                Icons.info_outline_rounded,
+                color: AppColors.muted,
               ),
             ),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              text,
+              'Siren, LED, and SMS outputs are not available in this firmware.',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, height: 16 / 12, fontWeight: FontWeight.w500, color: color),
+              style: TextStyle(
+                fontSize: 12,
+                height: 16 / 12,
+                fontWeight: FontWeight.w500,
+                color: AppColors.muted,
+              ),
             ),
           ),
-          if (s.level == StatusLevel.stable) ...[
-            const SizedBox(width: 8),
-            AppButton(
-              label: 'Test alarm',
-              variant: AppButtonVariant.outlined,
-              minWidth: 88,
-              horizontalPadding: 10,
-              height: 36,
-              fontSize: 13,
-              onPressed: onTestAlarm,
-            ),
-          ],
         ],
       ),
     );

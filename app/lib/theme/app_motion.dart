@@ -17,7 +17,7 @@ class AppMotion {
   static const Duration levelChange = Duration(milliseconds: 200);
   static const Curve levelCurve = Curves.easeOut;
 
-  // Critical alert opens: fades in and rises 8 px; siren ring pulses.
+  // Critical alert opens: fades in and rises 8 px; warning ring pulses.
   static const Duration alertIn = Duration(milliseconds: 250);
   static const double alertRise = 8;
   static const Duration pulse = Duration(milliseconds: 1200);
@@ -42,7 +42,8 @@ class AppMotion {
   /// `MediaQuery.disableAnimationsOf(context)` reads the same value as
   /// `MediaQuery.of(context).disableAnimations`, but only rebuilds the
   /// widget when that one setting changes.
-  static bool reduced(BuildContext context) => MediaQuery.disableAnimationsOf(context);
+  static bool reduced(BuildContext context) =>
+      MediaQuery.disableAnimationsOf(context);
 
   /// How long a risk-level colour change takes right now.
   static Duration levelChangeFor(BuildContext context) =>

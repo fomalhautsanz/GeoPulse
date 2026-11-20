@@ -5,12 +5,11 @@ import '../data/status_repository.dart';
 import '../models/device_status.dart';
 import '../models/notifications.dart';
 import '../models/settings.dart';
+import '../services/alert_sound_service.dart';
 import '../state/status_controller.dart';
 import '../theme/app_colors.dart';
-import '../utils/time_format.dart';
 import '../widgets/app_scaffold.dart';
 import '../widgets/common.dart';
-import '../widgets/confirm_dialog.dart';
 import '../widgets/fade_route.dart';
 import 'contacts_screen.dart';
 import 'notification_settings_screen.dart';
@@ -31,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Thresholds? _thresholds;
   int? _contactCount;
   NotificationPrefs? _prefs;
+  Object? _error;
 
   @override
   void initState() {
@@ -39,15 +39,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    // Future.wait runs the requests at the same time and waits for all.
-    final results = await Future.wait([getDeviceInfo(), getThresholds(), getContacts(), getNotificationPrefs()]);
-    if (!mounted) return;
-    setState(() {
-      _info = results[0] as DeviceInfo;
-      _thresholds = results[1] as Thresholds;
-      _contactCount = (results[2] as List).length;
-      _prefs = results[3] as NotificationPrefs;
-    });
+    try {
+      final results = await Future.wait([
+        getDeviceInfo(),
+        getThresholds(),
+        getContacts(),
+        getNotificationPrefs(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _info = results[0] as DeviceInfo;
+        _thresholds = results[1] as Thresholds;
+        _contactCount = (results[2] as List).length;
+        _prefs = results[3] as NotificationPrefs;
+        _error = null;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
   }
 
   /// Opens [screen], then reloads (its settings may have changed).
@@ -56,17 +65,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _load();
   }
 
-  Future<void> _testSiren() async {
-    final confirmed = await showConfirmDialog(
-      context,
-      title: 'Test the siren and buzzer?',
-      message: 'The siren, buzzer and red LED at the site will turn on for 5 seconds. '
-          'People nearby will hear it.',
-      confirmLabel: 'Test alarm',
-    );
-    if (!confirmed) return;
-    await testSiren();
-    if (mounted) showMessage(context, 'Test alarm sent to the device.');
+  Future<void> _testLaptopAlertSound() async {
+    try {
+      await AlertSoundService.playTestSound();
+      if (mounted) {
+        showMessage(context, 'Laptop alert sound played.');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('Test laptop alert sound failed: $e\n$stackTrace');
+      if (mounted) {
+        showMessage(
+          context,
+          'Could not play sound. Check the laptop volume and browser permissions.',
+        );
+      }
+    }
   }
 
   @override
@@ -76,13 +89,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final user = auth.currentUser;
 
     Widget tile(IconData icon) => IconBadge(
-          icon: icon,
-          background: AppColors.watchContainer,
-          foreground: AppColors.brand,
-          size: 36,
-          iconSize: 20,
-          rounded: true,
-        );
+      icon: icon,
+      background: AppColors.watchContainer,
+      foreground: AppColors.brand,
+      size: 36,
+      iconSize: 20,
+      rounded: true,
+    );
 
     return AppScaffold(
       title: 'Settings',
@@ -91,6 +104,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
         children: [
           _DeviceCard(info: _info, status: status),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            InfoBanner(
+              icon: Icons.error_outline_rounded,
+              warning: true,
+              text: 'Could not load settings: $_error',
+            ),
+            TextButton(onPressed: _load, child: const Text('Retry')),
+          ],
           const SizedBox(height: 14),
           GroupedCard(
             children: [
@@ -100,14 +122,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: t == null
                     ? ' '
                     : 'Soil ${t.soilWatchPercent}/${t.soilCriticalPercent}% · vibration '
-                        '${t.vibrationPerMin}/min · tilt ${t.tiltDegrees.toStringAsFixed(1)}°',
+                          '${t.vibrationPerMin}/min · tilt ${t.tiltDegrees.toStringAsFixed(1)}°',
                 trailing: ListRow.chevron,
                 onTap: () => _open(const ThresholdsScreen()),
               ),
               ListRow(
                 leading: tile(Icons.chat_bubble_outline_rounded),
                 title: 'SMS alert contacts',
-                subtitle: _contactCount == null ? ' ' : '$_contactCount contacts',
+                subtitle: _contactCount == null
+                    ? ' '
+                    : '$_contactCount stored · SMS unsupported',
                 trailing: ListRow.chevron,
                 onTap: () => _open(const ContactsScreen()),
               ),
@@ -116,30 +140,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: 'Notifications',
                 subtitle: _prefs == null
                     ? ' '
-                    : 'Critical alerts always on · warnings ${_prefs!.warnings ? 'on' : 'off'}',
+                    : 'Critical on · warnings ${_prefs!.warnings ? 'on' : 'off'}',
                 trailing: ListRow.chevron,
                 onTap: () => _open(const NotificationSettingsScreen()),
               ),
-              ListRow(
-                leading: tile(Icons.volume_up_outlined),
-                title: 'Test siren and buzzer',
-                subtitle: _info == null ? ' ' : 'Last test: ${formatRelativeDay(_info!.lastSirenTest)}',
-                trailing: ListRow.chevron,
-                onTap: _testSiren,
-              ),
+              if (AlertSoundService.isSupported)
+                ListRow(
+                  leading: tile(Icons.volume_up_outlined),
+                  title: 'Test laptop alert sound',
+                  subtitle:
+                      'Test and enable sound for Watch or higher soil readings',
+                  trailing: ListRow.chevron,
+                  onTap: _testLaptopAlertSound,
+                ),
               ListRow(
                 leading: tile(Icons.person_outline_rounded),
                 title: 'Profile and role',
-                subtitle: user == null ? 'Not logged in' : '${user.role.label} · ${user.barangay}',
+                subtitle: user == null
+                    ? 'Not logged in'
+                    : '${user.role.label} · ${user.barangay}',
                 trailing: ListRow.chevron,
                 onTap: () => _open(const ProfileScreen()),
               ),
               ListRow(
                 leading: tile(Icons.menu_book_outlined),
-                title: 'Safety guide and hotlines',
-                subtitle: 'What to do at each risk level',
+                title: 'Safety guide',
+                subtitle: 'Not available in this app build',
                 trailing: ListRow.chevron,
-                onTap: () => showNotYet(context, 'The safety guide'),
+                onTap: null,
               ),
             ],
           ),
@@ -159,6 +187,8 @@ class _DeviceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = status;
     final online = s?.online ?? false;
+    final battery = s?.batteryPercent;
+    final wifiBars = s?.wifiBars;
 
     return OutlinedCard(
       padding: const EdgeInsets.all(14),
@@ -182,17 +212,29 @@ class _DeviceCard extends StatelessWidget {
                   children: [
                     Text(
                       info?.name ?? 'GeoPulse Node',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.ink),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.ink,
+                      ),
                     ),
                     Text(
-                      info == null ? ' ' : '${info!.board} · firmware ${info!.firmware}',
-                      style: const TextStyle(fontSize: 12, color: AppColors.muted),
+                      info == null
+                          ? ' '
+                          : '${info!.board} · firmware ${info!.firmware}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.muted,
+                      ),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 3,
+                ),
                 decoration: BoxDecoration(
                   color: online ? AppColors.card : AppColors.watchContainer,
                   borderRadius: BorderRadius.circular(999),
@@ -215,13 +257,15 @@ class _DeviceCard extends StatelessWidget {
               _StatTile(
                 icon: Icons.battery_5_bar_rounded,
                 label: 'Battery',
-                value: s == null ? '–' : '${s.batteryPercent}% · about ${(s.batteryPercent * 0.23).round()} h',
+                value: battery == null ? 'Not reported' : '$battery%',
               ),
               const SizedBox(width: 8),
               _StatTile(
-                icon: Icons.signal_cellular_alt_rounded,
-                label: 'GSM/LTE',
-                value: s == null ? '–' : '${s.gsmBars} of ${DeviceStatus.maxGsmBars} bars',
+                icon: Icons.wifi_rounded,
+                label: 'Wi-Fi',
+                value: wifiBars == null
+                    ? 'Not reported'
+                    : '$wifiBars of ${DeviceStatus.maxWifiBars} bars',
               ),
             ],
           ),
@@ -230,11 +274,19 @@ class _DeviceCard extends StatelessWidget {
             children: [
               _StatTile(
                 icon: online ? Icons.cloud_outlined : Icons.cloud_off_outlined,
-                label: 'Internet (Blynk)',
-                value: online ? 'Connected' : 'Offline',
+                label: 'Firebase',
+                value: s == null
+                    ? 'No data'
+                    : online
+                    ? 'Connected'
+                    : 'Offline',
               ),
               const SizedBox(width: 8),
-              const _StatTile(icon: Icons.volume_up_outlined, label: 'Local alarms', value: 'Ready'),
+              const _StatTile(
+                icon: Icons.volume_up_outlined,
+                label: 'Site outputs',
+                value: 'Not reported',
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -245,8 +297,12 @@ class _DeviceCard extends StatelessWidget {
               SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'If the internet drops, the device still sounds the siren and lights the LEDs at the site.',
-                  style: TextStyle(fontSize: 12, height: 17 / 12, color: AppColors.ink),
+                  'Battery level and on-site alarm hardware are not monitored by this firmware.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 17 / 12,
+                    color: AppColors.ink,
+                  ),
                 ),
               ),
             ],
@@ -258,7 +314,11 @@ class _DeviceCard extends StatelessWidget {
 }
 
 class _StatTile extends StatelessWidget {
-  const _StatTile({required this.icon, required this.label, required this.value});
+  const _StatTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   final IconData icon;
   final String label;
@@ -269,7 +329,10 @@ class _StatTile extends StatelessWidget {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-        decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12)),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(12),
+        ),
         child: Row(
           children: [
             Icon(icon, size: 20, color: AppColors.ink),
@@ -278,12 +341,22 @@ class _StatTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label, style: const TextStyle(fontSize: 11, color: AppColors.muted)),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.muted,
+                    ),
+                  ),
                   Text(
                     value,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.ink),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
                   ),
                 ],
               ),

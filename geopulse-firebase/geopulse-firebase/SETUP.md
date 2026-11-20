@@ -1,47 +1,61 @@
-# GeoPulse: connect the ESP32 to the Flutter app with Firebase
+# GeoPulse Firebase setup
 
-Data flow: ESP32 --Wi-Fi--> Firebase Realtime Database --> Flutter app
-(the app also writes thresholds back; the ESP32 reads them every ~30 s)
+Data flow: ESP32 → Wi-Fi → Firebase Realtime Database → Flutter app.
 
-## 1. Firebase console (once)
-1. Create a project (Google Analytics not needed).
-2. Build > **Realtime Database** > Create database (pick Singapore) > start in locked mode.
-3. Build > **Authentication** > Sign-in method: enable **Email/Password** and **Anonymous**.
-4. Authentication > Users > **Add user**: `gp01@geopulse.test` + a password (this is the ESP32's account).
-5. Realtime Database > **Rules**: paste `database.rules.json` and Publish.
-   (If you use a different email for the ESP32, change it in the rules too.)
-6. Note: Project settings > General > **Web API Key**, and the database URL.
+## Firebase
 
-## 2. Flutter app (in the `app/` folder)
+1. Create a Firebase project and a Realtime Database in locked mode.
+2. Enable **Email/Password** and **Anonymous** sign-in in Authentication.
+3. Create an Email/Password account for the ESP32 and put its credentials in
+   `firmware/geopulse_node/secrets.h` (copy `secrets.h.example`). Do not commit
+   that file.
+4. Configure the Flutter app with `flutterfire configure`.
+5. Publish `database.rules.json` in Realtime Database → Rules. Change the
+   device email in the rules if it differs from `gp01@geopulse.test`.
+
+The Flutter app signs into Firebase anonymously for database access. This is
+separate from the app's profile/login flow, which is unchanged.
+
+## ESP32
+
+1. Install the Arduino libraries **Firebase Arduino Client Library for
+   ESP8266 and ESP32**, **Adafruit ADXL345**, and **Adafruit Unified Sensor**.
+2. Wire ADXL345 VCC to 3V3, GND to GND, SDA to GPIO21, SCL to GPIO22, CS to 3V3,
+   and SDO to GND (I²C address `0x53`). Wire soil AO to GPIO34.
+3. Set `SOIL_DRY_RAW` and `SOIL_WET_RAW` in the sketch using readings from the
+   actual probe in dry and saturated soil.
+4. Upload the sketch and open Serial Monitor at 115200 baud. Keep the node
+   still during ADXL345 calibration.
+
+The node sends live status every second and chart readings every five minutes.
+It reads saved thresholds from Firebase every 30 seconds and records each
+alert-level or hazard-kind transition in `/geopulse/nodes/GP-01/history`.
+An earthquake alert requires vibration events in at least three different
+seconds within a five-second window, as well as the configured events-per-minute
+threshold. Tilt can raise a ground-movement alert but does not by itself count
+as an earthquake. Keep the node fixed and still during startup calibration.
+
+## Database paths
+
+```text
+/geopulse/nodes/GP-01/status       current readings and node metadata
+/geopulse/nodes/GP-01/readings     timestamped chart samples
+/geopulse/nodes/GP-01/history      actual alert-level transitions
+/geopulse/nodes/GP-01/thresholds   settings saved by the app and read by the node
+/geopulse/nodes/GP-01/contacts     optional stored contact records
+/geopulse/nodes/GP-01/notifications app notification records
+/geopulse/users/{uid}/notificationPrefs per-user app notification settings
 ```
-flutter pub add firebase_core firebase_auth firebase_database
-dart pub global activate flutterfire_cli
-flutterfire configure        # creates lib/firebase_options.dart
-```
-Copy over your project (keep the folder structure):
-- `lib/data/firebase_source.dart`  (new)
-- `lib/data/status_repository.dart` (replaces yours; adds `useFirebase`)
-- `lib/main.dart` (replaces yours; adds Firebase init + anonymous sign-in)
 
-`useFirebase = false` in status_repository.dart brings back the sample data for demos.
-Add `lib/firebase_options.dart` to .gitignore if the repo is public.
+## Current hardware and service limits
 
-## 3. ESP32 (Arduino IDE)
-1. Install libraries: "Firebase Arduino Client Library for ESP8266 and ESP32" (mobizt), "Adafruit ADXL345", "Adafruit Unified Sensor".
-2. Copy `secrets.h.example` to `secrets.h` and fill it in. Never commit `secrets.h`.
-3. Wire it as in the header comment of `geopulse_node.ino`, upload, open Serial Monitor (115200).
-4. **Calibrate soil**: note `soil raw=` in dry air/dry soil and in a glass of water; put them in `SOIL_DRY_RAW` / `SOIL_WET_RAW`.
-5. Keep the node still for the first 2 s after reset: that position becomes "0 degrees tilt".
-
-## Database layout
-```
-/geopulse/nodes/GP-01/status      level, soil, tilt, tiltX, tiltY, vibration, rssi, ts
-/geopulse/nodes/GP-01/history/..  one entry each time the level escalates
-/geopulse/nodes/GP-01/thresholds  written by the app
-```
-
-## What is still sample data / not wired
-- Sensor charts (Sensors screen), contacts, notifications list: still mock.
-- Battery shows 100 (not measured); the "signal" slot shows Wi-Fi bars; siren/SMS counts are 0.
-- Phone notifications only fire while the app is running. Alerts when the app is closed need Firebase Cloud Messaging plus a Cloud Function (Blaze plan), or an SMS API.
-- "Vibration" is now derived from the ADXL345 (shake events per minute), not an SW-420.
+- Soil readings come from the analog probe. Tilt and vibration are available
+  only when `adxlReady` is true; otherwise the app shows them as unavailable.
+- Battery level, siren/buzzer, LEDs/OLED, GSM, and SMS are not implemented by
+  this firmware. The app does not simulate their readings or actions. Stored
+  contacts are informational and are not sent SMS.
+- Phone notifications are recorded and shown while the app is connected.
+  Delivery when the app is closed needs Firebase Cloud Messaging and a server
+  trigger; this project does not currently have that service.
+- The app's profile/login flow is unchanged by the removal of demo sensor and
+  service data.

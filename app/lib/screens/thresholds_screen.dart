@@ -25,18 +25,29 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
   final _tilt = TextEditingController();
   Thresholds? _t; // the values being edited; null while loading
   bool _saving = false;
+  Object? _error;
 
   @override
   void initState() {
     super.initState();
-    getThresholds().then((t) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final t = await getThresholds();
       if (!mounted) return;
-      setState(() => _t = t);
+      setState(() {
+        _t = t;
+        _error = null;
+      });
       _soilWatch.text = '${t.soilWatchPercent}';
       _soilCritical.text = '${t.soilCriticalPercent}';
       _vibration.text = '${t.vibrationPerMin}';
       _tilt.text = t.tiltDegrees.toStringAsFixed(1);
-    });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
   }
 
   @override
@@ -49,11 +60,11 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
 
   /// Validator for a whole number between [min] and [max].
   FormFieldValidator<String> _intRange(int min, int max) => (v) {
-        final n = int.tryParse(v ?? '');
-        if (n == null) return 'Enter a number';
-        if (n < min || n > max) return '$min–$max';
-        return null;
-      };
+    final n = int.tryParse(v ?? '');
+    if (n == null) return 'Enter a number';
+    if (n < min || n > max) return '$min–$max';
+    return null;
+  };
 
   Future<void> _save() async {
     final t = _t;
@@ -65,14 +76,28 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
       return;
     }
     setState(() => _saving = true);
-    await saveThresholds(t.copyWith(
-      soilWatchPercent: watch,
-      soilCriticalPercent: critical,
-      vibrationPerMin: int.parse(_vibration.text),
-      tiltDegrees: double.parse(_tilt.text),
-    ));
+    try {
+      await saveThresholds(
+        t.copyWith(
+          soilWatchPercent: watch,
+          soilCriticalPercent: critical,
+          vibrationPerMin: int.parse(_vibration.text),
+          tiltDegrees: double.parse(_tilt.text),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = error;
+      });
+      return;
+    }
     if (!mounted) return;
-    setState(() => _saving = false);
+    setState(() {
+      _saving = false;
+      _error = null;
+    });
     showMessage(context, 'Saved and synced to Node GP‑01.');
   }
 
@@ -87,14 +112,22 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
           label: _saving ? 'Syncing…' : 'Save and sync to device',
           onPressed: t == null || _saving ? null : _save,
         ),
-        children: t == null
-            ? const [Center(child: CircularProgressIndicator(color: AppColors.brand))]
+        children: _error != null
+            ? [
+                Text('Could not load or save thresholds: $_error'),
+                TextButton(onPressed: _load, child: const Text('Retry')),
+              ]
+            : t == null
+            ? const [
+                Center(
+                  child: CircularProgressIndicator(color: AppColors.brand),
+                ),
+              ]
             : [
                 const InfoBanner(
                   icon: Icons.info_outline_rounded,
                   warning: true,
-                  text: 'Prototype values. Calibrate them at the site during testing. '
-                      'They are not universal scientific limits.',
+                  text: 'Calibrate these sensor thresholds at the site. They are not universal scientific limits.',
                 ),
                 const SizedBox(height: 12),
                 OutlinedCard(
@@ -108,8 +141,14 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
                       ),
                       const SizedBox(height: 8),
                       _SoilRangeSlider(
-                        watch: (int.tryParse(_soilWatch.text) ?? t.soilWatchPercent).clamp(0, 100),
-                        critical: (int.tryParse(_soilCritical.text) ?? t.soilCriticalPercent).clamp(0, 100),
+                        watch:
+                            (int.tryParse(_soilWatch.text) ??
+                                    t.soilWatchPercent)
+                                .clamp(0, 100),
+                        critical:
+                            (int.tryParse(_soilCritical.text) ??
+                                    t.soilCriticalPercent)
+                                .clamp(0, 100),
                         onChanged: (watch, critical) => setState(() {
                           _soilWatch.text = '$watch';
                           _soilCritical.text = '$critical';
@@ -150,7 +189,7 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
                     children: [
                       const _CardHeader(
                         icon: Icons.monitor_heart_outlined,
-                        title: 'Ground vibration · SW‑420',
+                        title: 'Ground vibration · ADXL345',
                         subtitle: 'Earthquake / seismic alert',
                       ),
                       const SizedBox(height: 12),
@@ -177,7 +216,9 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
                                   label: (v) => v.label,
                                   showCheck: false,
                                   height: 48,
-                                  onChanged: (v) => setState(() => _t = t.copyWith(sensitivity: v)),
+                                  onChanged: (v) => setState(
+                                    () => _t = t.copyWith(sensitivity: v),
+                                  ),
                                 ),
                               ],
                             ),
@@ -196,7 +237,7 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
                         child: _CardHeader(
                           icon: Icons.trending_up_rounded,
                           title: 'Ground movement',
-                          subtitle: 'MPU6050 tilt',
+                          subtitle: 'ADXL345 tilt',
                         ),
                       ),
                       SizedBox(
@@ -218,34 +259,23 @@ class _ThresholdsScreenState extends State<ThresholdsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                GroupedCard(
-                  children: [
-                    _toggle('Siren and buzzer', t.sirenEnabled, (v) => t.copyWith(sirenEnabled: v)),
-                    _toggle('LEDs and OLED screen', t.ledsEnabled, (v) => t.copyWith(ledsEnabled: v)),
-                    _toggle('Auto-SMS at Watch and above', t.autoSms, (v) => t.copyWith(autoSms: v)),
-                    _toggle(
-                      'Combined alert when 2 sensors trigger',
-                      t.combinedAlert,
-                      (v) => t.copyWith(combinedAlert: v),
-                    ),
-                  ],
+                const InfoBanner(
+                  icon: Icons.info_outline_rounded,
+                  warning: true,
+                  text: 'Siren, LED, and SMS outputs are not supported by this firmware.',
                 ),
               ],
       ),
     );
   }
-
-  Widget _toggle(String title, bool value, Thresholds Function(bool) update) {
-    return ListRow(
-      title: title,
-      padding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
-      trailing: AppSwitch(value: value, onChanged: (v) => setState(() => _t = update(v))),
-    );
-  }
 }
 
 class _CardHeader extends StatelessWidget {
-  const _CardHeader({required this.icon, required this.title, required this.subtitle});
+  const _CardHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
 
   final IconData icon;
   final String title;
@@ -262,8 +292,18 @@ class _CardHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.ink)),
-              Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.ink,
+                ),
+              ),
+              Text(
+                subtitle,
+                style: const TextStyle(fontSize: 12, color: AppColors.muted),
+              ),
             ],
           ),
         ),
@@ -279,9 +319,16 @@ class _FieldLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Text(text, style: const TextStyle(fontSize: 13, height: 1.172, color: AppColors.muted)),
-      );
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 13,
+        height: 1.172,
+        color: AppColors.muted,
+      ),
+    ),
+  );
 }
 
 /// A label + white number box with a unit, e.g. "Watch at [70 %]".
@@ -320,7 +367,11 @@ class _NumberField extends StatelessWidget {
 /// Two-handle slider for soil Watch and Critical. The track shows the
 /// zones: grey (normal), coral (watch), maroon (critical).
 class _SoilRangeSlider extends StatelessWidget {
-  const _SoilRangeSlider({required this.watch, required this.critical, required this.onChanged});
+  const _SoilRangeSlider({
+    required this.watch,
+    required this.critical,
+    required this.onChanged,
+  });
 
   final int watch;
   final int critical;
@@ -371,13 +422,17 @@ class _ZoneTrackShape extends RoundedRectRangeSliderTrackShape {
     required TextDirection textDirection,
     double additionalActiveTrackHeight = 2,
   }) {
-    final rect = getPreferredRect(parentBox: parentBox, offset: offset, sliderTheme: sliderTheme);
+    final rect = getPreferredRect(
+      parentBox: parentBox,
+      offset: offset,
+      sliderTheme: sliderTheme,
+    );
     final radius = Radius.circular(rect.height / 2);
     final canvas = context.canvas;
     void segment(double from, double to, Color color) => canvas.drawRRect(
-          RRect.fromLTRBR(from, rect.top, to, rect.bottom, radius),
-          Paint()..color = color,
-        );
+      RRect.fromLTRBR(from, rect.top, to, rect.bottom, radius),
+      Paint()..color = color,
+    );
     segment(rect.left, startThumbCenter.dx, AppColors.outline);
     segment(endThumbCenter.dx, rect.right, AppColors.criticalContainer);
     segment(startThumbCenter.dx, endThumbCenter.dx, AppColors.watchStrong);
