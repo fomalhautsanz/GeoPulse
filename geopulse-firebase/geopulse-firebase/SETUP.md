@@ -1,7 +1,7 @@
 # GeoPulse: connect the ESP32 to the Flutter app with Firebase
 
-Data flow: ESP32 --Wi-Fi--> Firebase Realtime Database --> Flutter app
-(the app also writes thresholds back; the ESP32 reads them every ~30 s)
+Data flow: ESP32 --Wi-Fi--> Firebase Realtime Database --> Flutter app.
+The current soil-monitor sketch uploads status about every 10 seconds.
 
 ## 1. Firebase console (once)
 1. Create a project (Google Analytics not needed).
@@ -27,21 +27,23 @@ Copy over your project (keep the folder structure):
 Add `lib/firebase_options.dart` to .gitignore if the repo is public.
 
 ## 3. ESP32 (Arduino IDE)
-1. Install libraries: "Firebase Arduino Client Library for ESP8266 and ESP32" (mobizt), "Adafruit ADXL345", "Adafruit Unified Sensor".
+1. Install the "Firebase Arduino Client Library for ESP8266 and ESP32" (mobizt).
 2. Copy `secrets.h.example` to `secrets.h` and fill it in. Never commit `secrets.h`.
-3. Wire it as in the header comment of `geopulse_node.ino`, upload, open Serial Monitor (115200).
-4. **Calibrate soil**: note `soil raw=` in dry air/dry soil and in a glass of water; put them in `SOIL_DRY_RAW` / `SOIL_WET_RAW`.
-5. Keep the node still for the first 2 s after reset: that position becomes "0 degrees tilt".
+3. Wire the soil sensor as in the header comment of `geopulse_node.ino`, upload, and open Serial Monitor at 115200 baud.
+4. Confirm Wi-Fi connects, then look for `Firebase status uploaded`. Each upload writes to `/geopulse/nodes/GP-01/status`.
+5. **Calibrate soil**: note `raw=` in dry soil and in soaked soil; put those readings in `SOIL_DRY_RAW` / `SOIL_WET_RAW`.
 
 ## Database layout
 ```
-/geopulse/nodes/GP-01/status      level, soil, tilt, tiltX, tiltY, vibration, rssi, ts
-/geopulse/nodes/GP-01/history/..  one entry each time the level escalates
-/geopulse/nodes/GP-01/thresholds  written by the app
+/geopulse/nodes/GP-01/status      nodeId, level, soil, tilt, vibration, rssi, ts
+/geopulse/nodes/GP-01/history/..  reserved for alert history
+/geopulse/nodes/GP-01/thresholds  app settings; current soil sketch does not read them
 ```
 
 ## What is still sample data / not wired
+- The current firmware reads soil moisture only. It writes `tilt` and `vibration` as zero; the ADXL345 and other sensor readings are not implemented in this sketch.
+- Threshold settings are saved by the app but are not yet read by this firmware; alert levels currently use fixed soil cutoffs.
 - Sensor charts (Sensors screen), contacts, notifications list: still mock.
 - Battery shows 100 (not measured); the "signal" slot shows Wi-Fi bars; siren/SMS counts are 0.
 - Phone notifications only fire while the app is running. Alerts when the app is closed need Firebase Cloud Messaging plus a Cloud Function (Blaze plan), or an SMS API.
-- "Vibration" is now derived from the ADXL345 (shake events per minute), not an SW-420.
+- Tilt and vibration are placeholders in the current soil-only firmware; they need sensor-reading code before they show real values.
