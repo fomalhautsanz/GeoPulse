@@ -6,13 +6,11 @@ class DeviceInfo {
     required this.name,
     required this.board,
     required this.firmware,
-    required this.lastSirenTest,
   });
 
   final String name; // "GeoPulse Node GP‑01"
   final String board; // "ESP32"
   final String firmware; // "[v0.1]"
-  final DateTime lastSirenTest;
 }
 
 enum VibrationSensitivity {
@@ -32,10 +30,6 @@ class Thresholds {
     required this.vibrationPerMin,
     required this.sensitivity,
     required this.tiltDegrees,
-    required this.sirenEnabled,
-    required this.ledsEnabled,
-    required this.autoSms,
-    required this.combinedAlert,
   });
 
   final int soilWatchPercent;
@@ -43,22 +37,14 @@ class Thresholds {
   final int vibrationPerMin;
   final VibrationSensitivity sensitivity;
   final double tiltDegrees;
-  final bool sirenEnabled;
-  final bool ledsEnabled;
-  final bool autoSms; // SMS at Watch and above
-  final bool combinedAlert; // alert when 2 sensors trigger
 
-  /// A copy with some values changed: `t.copyWith(autoSms: false)`.
+  /// A copy with some values changed: `t.copyWith(soilWatchPercent: 65)`.
   Thresholds copyWith({
     int? soilWatchPercent,
     int? soilCriticalPercent,
     int? vibrationPerMin,
     VibrationSensitivity? sensitivity,
     double? tiltDegrees,
-    bool? sirenEnabled,
-    bool? ledsEnabled,
-    bool? autoSms,
-    bool? combinedAlert,
   }) {
     return Thresholds(
       soilWatchPercent: soilWatchPercent ?? this.soilWatchPercent,
@@ -66,13 +52,17 @@ class Thresholds {
       vibrationPerMin: vibrationPerMin ?? this.vibrationPerMin,
       sensitivity: sensitivity ?? this.sensitivity,
       tiltDegrees: tiltDegrees ?? this.tiltDegrees,
-      sirenEnabled: sirenEnabled ?? this.sirenEnabled,
-      ledsEnabled: ledsEnabled ?? this.ledsEnabled,
-      autoSms: autoSms ?? this.autoSms,
-      combinedAlert: combinedAlert ?? this.combinedAlert,
     );
   }
 }
+
+const defaultThresholds = Thresholds(
+  soilWatchPercent: 70,
+  soilCriticalPercent: 90,
+  vibrationPerMin: 5,
+  sensitivity: VibrationSensitivity.medium,
+  tiltDegrees: 2.0,
+);
 
 /// Which alerts a contact gets by SMS.
 enum ContactAlertLevel {
@@ -99,7 +89,11 @@ class AlertContact {
 
   /// "Barangay DRRM Office" → "BD".
   String get initials {
-    final words = name.replaceAll(RegExp(r'[\[\]]'), '').split(' ').where((w) => w.isNotEmpty).toList();
+    final words = name
+        .replaceAll(RegExp(r'[\[\]]'), '')
+        .split(' ')
+        .where((w) => w.isNotEmpty)
+        .toList();
     return words.take(2).map((w) => w[0].toUpperCase()).join();
   }
 }

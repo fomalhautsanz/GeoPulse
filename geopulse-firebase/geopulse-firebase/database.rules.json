@@ -1,12 +1,26 @@
 {
   "rules": {
     "geopulse": {
-      ".read": "auth != null",
       "nodes": {
         "$node": {
+          ".read": "auth != null",
           "status":     { ".write": "auth.token.email === 'gp01@geopulse.test'" },
           "history":    { ".write": "auth.token.email === 'gp01@geopulse.test'" },
+          "readings":   {
+            ".write": "auth.token.email === 'gp01@geopulse.test'",
+            ".indexOn": ["ts"]
+          },
+          "notifications": { ".write": "auth != null" },
+          "contacts":      { ".write": "auth != null" },
           "thresholds": { ".write": "auth != null" }
+        }
+      },
+      "users": {
+        "$uid": {
+          "notificationPrefs": {
+            ".read": "auth != null && auth.uid === $uid",
+            ".write": "auth != null && auth.uid === $uid"
+          }
         }
       }
     }

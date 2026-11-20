@@ -22,7 +22,11 @@ enum SensorRange {
 
 /// Readings over time for one sensor, oldest first. The last point is now.
 class SensorHistory {
-  const SensorHistory({required this.kind, required this.range, required this.points});
+  const SensorHistory({
+    required this.kind,
+    required this.range,
+    required this.points,
+  });
 
   final SensorKind kind;
   final SensorRange range;
@@ -41,7 +45,7 @@ class SensorDetails {
     required this.readEvery,
   });
 
-  final double tiltX; // degrees, MPU6050 X axis
+  final double tiltX; // degrees, ADXL345 X axis
   final double tiltY; // degrees, Y axis
   final int vibrationPeakPerMin;
   final DateTime vibrationPeakTime;

@@ -1,6 +1,13 @@
 /// The kinds of notification GeoPulse sends ("Reference · Notification
 /// types" in Figma).
-enum NotificationType { critical, high, watch, backToStable, offline, lowBattery }
+enum NotificationType {
+  critical,
+  high,
+  watch,
+  backToStable,
+  offline,
+  lowBattery,
+}
 
 /// One entry in the in-app Notifications list.
 class AppNotification {
@@ -13,15 +20,21 @@ class AppNotification {
     this.read = false,
   });
 
-  final int id;
+  final String id;
   final NotificationType type;
   final String title;
   final String body;
   final DateTime time;
   final bool read;
 
-  AppNotification markedRead() =>
-      AppNotification(id: id, type: type, title: title, body: body, time: time, read: true);
+  AppNotification markedRead() => AppNotification(
+    id: id,
+    type: type,
+    title: title,
+    body: body,
+    time: time,
+    read: true,
+  );
 }
 
 /// Which notifications the user wants. Critical alerts are always on.
@@ -40,7 +53,12 @@ class NotificationPrefs {
 
   bool get critical => true; // always on, can't be turned off
 
-  NotificationPrefs copyWith({bool? warnings, bool? backToStable, bool? deviceOnline, bool? lowBattery}) {
+  NotificationPrefs copyWith({
+    bool? warnings,
+    bool? backToStable,
+    bool? deviceOnline,
+    bool? lowBattery,
+  }) {
     return NotificationPrefs(
       warnings: warnings ?? this.warnings,
       backToStable: backToStable ?? this.backToStable,
@@ -51,10 +69,17 @@ class NotificationPrefs {
 
   /// Should a notification of this type be shown?
   bool allows(NotificationType type) => switch (type) {
-        NotificationType.critical => true,
-        NotificationType.high || NotificationType.watch => warnings,
-        NotificationType.backToStable => backToStable,
-        NotificationType.offline => deviceOnline,
-        NotificationType.lowBattery => lowBattery,
-      };
+    NotificationType.critical => true,
+    NotificationType.high || NotificationType.watch => warnings,
+    NotificationType.backToStable => backToStable,
+    NotificationType.offline => deviceOnline,
+    NotificationType.lowBattery => lowBattery,
+  };
 }
+
+const defaultNotificationPrefs = NotificationPrefs(
+  warnings: true,
+  backToStable: true,
+  deviceOnline: true,
+  lowBattery: false,
+);

@@ -9,7 +9,7 @@ plugins {
 
 android {
     namespace = "com.geopulse.geopulse"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -29,9 +29,6 @@ Future<void> main() async {
   final openedFromCriticalAlert = await NotificationService.init();
   NotificationService.fallbackOpenCritical = _openCriticalAlert;
   if (openedFromCriticalAlert) {
-    // MOCK ONLY: the sample data starts at Stable after a restart, so match
-    // the critical alert that was tapped. Remove with the mock data.
-    debugSetMockLevel(StatusLevel.critical);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openCriticalAlert());
   }
   runApp(const GeoPulseApp());

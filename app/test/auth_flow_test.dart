@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geopulse/data/auth_repository.dart' as auth;
-import 'package:geopulse/data/mock_data.dart';
 import 'package:geopulse/main.dart';
 import 'package:geopulse/models/user_profile.dart';
 
@@ -25,11 +24,12 @@ Future<void> _tapText(WidgetTester tester, String text) async {
 
 void main() {
   setUp(() async {
-    resetMockData();
     await auth.logOut();
   });
 
-  testWidgets('Landing → Log in shows errors, then logs in to Status', (tester) async {
+  testWidgets('Landing → Log in shows errors, then logs in to Status', (
+    tester,
+  ) async {
     await _openApp(tester);
     expect(find.text('GeoPulse'), findsOneWidget);
 
@@ -51,10 +51,15 @@ void main() {
     expect(find.text('Conditions Stable'), findsOneWidget);
     expect(auth.currentUser, isNotNull);
     // Landing and Log in were removed, so there's nothing to go back to.
-    expect(Navigator.of(tester.element(find.text('Conditions Stable'))).canPop(), isFalse);
+    expect(
+      Navigator.of(tester.element(find.text('Conditions Stable'))).canPop(),
+      isFalse,
+    );
   });
 
-  testWidgets('Sign up has the four roles and a barangay field', (tester) async {
+  testWidgets('Sign up has the four roles and a barangay field', (
+    tester,
+  ) async {
     await _openApp(tester);
     await _tapText(tester, 'Create an account');
     expect(find.text('Barangay / site'), findsOneWidget);
@@ -69,7 +74,10 @@ void main() {
 
     await tester.enterText(find.byType(TextFormField).at(0), 'Ana Cruz');
     await tester.enterText(find.byType(TextFormField).at(1), '0917 123 4567');
-    await tester.enterText(find.byType(TextFormField).at(2), 'Brgy. San Isidro');
+    await tester.enterText(
+      find.byType(TextFormField).at(2),
+      'Brgy. San Isidro',
+    );
     await tester.enterText(find.byType(TextFormField).at(3), 'longpassword');
     await _tapText(tester, 'Create account');
     await tester.pump(_authLatency);
@@ -81,7 +89,9 @@ void main() {
     expect(auth.currentUser?.barangay, 'Brgy. San Isidro');
   });
 
-  testWidgets('Sign up rejects a short phone and password, and no role', (tester) async {
+  testWidgets('Sign up rejects a short phone and password, and no role', (
+    tester,
+  ) async {
     await _openApp(tester);
     await _tapText(tester, 'Create an account');
 
@@ -89,13 +99,18 @@ void main() {
     await tester.enterText(find.byType(TextFormField).at(3), 'short');
     await _tapText(tester, 'Create account');
 
-    expect(find.text('Enter a full phone number, e.g. 09XX XXX XXXX'), findsOneWidget);
+    expect(
+      find.text('Enter a full phone number, e.g. 09XX XXX XXXX'),
+      findsOneWidget,
+    );
     expect(find.text('Choose your role'), findsWidgets); // hint + error
     expect(find.text('Use at least 8 characters'), findsOneWidget);
     expect(auth.currentUser, isNull);
   });
 
-  testWidgets('Log in ↔ Sign up switch keeps Back going to Landing', (tester) async {
+  testWidgets('Log in ↔ Sign up switch keeps Back going to Landing', (
+    tester,
+  ) async {
     await _openApp(tester);
     await _tapText(tester, 'Log in');
     await _tapText(tester, 'Create an account');

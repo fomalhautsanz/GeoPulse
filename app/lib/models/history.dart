@@ -4,6 +4,7 @@ import 'device_status.dart';
 enum HazardKind {
   landslide('Landslide'),
   earthquake('Earthquake'),
+  groundMovement('Ground movement'),
   combined('Combined'),
   test('Tests');
 

@@ -11,7 +11,7 @@ import '../widgets/app_scaffold.dart';
 import '../widgets/common.dart';
 
 /// "Alert history" in Figma: filter chips, this week at a glance, then past
-/// alerts grouped by day with the outputs each one used.
+/// alert transitions grouped by day with any output reports available.
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -21,6 +21,7 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<AlertEvent>? _events; // null while loading
+  Object? _error;
   HazardKind? _filter; // null = All
 
   @override
@@ -30,8 +31,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _load() async {
-    final events = await getAlertHistory();
-    if (mounted) setState(() => _events = events);
+    try {
+      final events = await getAlertHistory();
+      if (mounted) {
+        setState(() {
+          _events = events;
+          _error = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
   }
 
   @override
@@ -40,7 +50,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return AppScaffold(
       title: 'History',
       currentTab: AppTab.history,
-      body: events == null
+      body: _error != null
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Could not load history: $_error'),
+                  TextButton(onPressed: _load, child: const Text('Retry')),
+                ],
+              ),
+            )
+          : events == null
           ? const Center(
               child: CircularProgressIndicator(color: AppColors.brand),
             )
@@ -110,11 +130,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ],
         const SizedBox(height: 12),
         AppButton(
-          label: 'Export report (CSV)',
+          label: 'CSV export unavailable',
           icon: Icons.download_rounded,
           variant: AppButtonVariant.neutral,
           height: 46,
-          onPressed: () => showNotYet(context, 'Report export'),
+          onPressed: null,
         ),
       ],
     );
@@ -141,8 +161,9 @@ class _WeekCard extends StatelessWidget {
       StatusLevel? worst;
       for (final e in weekEvents) {
         if (startOfDay(e.time) == day &&
-            (worst == null || e.level!.index > worst.index))
+            (worst == null || e.level!.index > worst.index)) {
           worst = e.level;
+        }
       }
       return worst;
     }
@@ -252,7 +273,7 @@ class _EventCard extends StatelessWidget {
     final e = event;
     final (icon, bg, fg) = switch (e.level) {
       StatusLevel.critical => (
-        Icons.volume_up_outlined,
+        Icons.warning_amber_rounded,
         AppColors.criticalContainer,
         AppColors.criticalOn,
       ),

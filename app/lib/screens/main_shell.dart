@@ -1,15 +1,12 @@
-import 'dart:math' as math;
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../data/status_repository.dart';
 import '../models/device_status.dart';
+import '../services/alert_sound_service.dart';
 import '../models/sensor.dart';
 import '../services/notification_service.dart';
 import '../state/shell_scope.dart';
 import '../state/status_controller.dart';
-import '../widgets/debug_menu.dart';
 import '../widgets/fade_route.dart';
 import 'critical_alert_screen.dart';
 import 'history_screen.dart';
@@ -24,9 +21,13 @@ import 'status_screen.dart';
 /// - keeps the live device reading ([StatusController]),
 /// - shows notifications when the risk level changes,
 /// - opens the full-screen Critical alert when the level becomes critical,
-/// - the temporary debug menu.
+/// - keeps the unread notification badge current.
 class MainShell extends StatefulWidget {
-  const MainShell({super.key, this.initialTab = AppTab.status, this.controller});
+  const MainShell({
+    super.key,
+    this.initialTab = AppTab.status,
+    this.controller,
+  });
 
   final AppTab initialTab;
 
@@ -40,9 +41,12 @@ class MainShell extends StatefulWidget {
 // `implements ShellActions` promises this class has every method listed in
 // ShellActions, so screens can call them through ShellScope.
 class _MainShellState extends State<MainShell> implements ShellActions {
-  late final StatusController _controller = widget.controller ?? StatusController();
+  late final StatusController _controller =
+      widget.controller ?? StatusController();
   late AppTab _tab = widget.initialTab;
-  final _sensor = ValueNotifier<SensorKind>(SensorKind.soil); // Sensors tab choice
+  final _sensor = ValueNotifier<SensorKind>(
+    SensorKind.soil,
+  ); // Sensors tab choice
   bool _alertOpen = false;
   bool _silencedOnPhone = false;
   bool _hasUnread = false;
@@ -68,16 +72,28 @@ class _MainShellState extends State<MainShell> implements ShellActions {
   }
 
   Future<void> _refreshUnread() async {
-    final list = await getNotifications();
-    if (mounted) setState(() => _hasUnread = list.any((n) => !n.read));
+    try {
+      final list = await getNotifications();
+      if (mounted) setState(() => _hasUnread = list.any((n) => !n.read));
+    } catch (error, stackTrace) {
+      debugPrint('Could not refresh notification badge: $error\n$stackTrace');
+    }
   }
 
   Future<void> _onStatusChange(DeviceStatus? before, DeviceStatus after) async {
     if (after.level != StatusLevel.critical) _silencedOnPhone = false;
-    await NotificationService.notifyChange(before, after);
-    await _refreshUnread();
+    if (AlertSoundService.riskIncreased(before, after)) {
+      await AlertSoundService.playAlert();
+    }
+    try {
+      await NotificationService.notifyChange(before, after);
+      await _refreshUnread();
+    } catch (error, stackTrace) {
+      debugPrint('Could not process device notification: $error\n$stackTrace');
+    }
     // Becoming critical opens the full-screen alert once.
-    if (after.level == StatusLevel.critical && before?.level != StatusLevel.critical) {
+    if (after.level == StatusLevel.critical &&
+        before?.level != StatusLevel.critical) {
       openCriticalAlert();
     }
   }
@@ -90,7 +106,8 @@ class _MainShellState extends State<MainShell> implements ShellActions {
 
   @override
   Future<void> openNotifications() async {
-    await Navigator.of(context).push(fadeRoute<void>(context, const NotificationsScreen()));
+    await Navigator.of(context)
+        .push(fadeRoute<void>(context, const NotificationsScreen()));
     _refreshUnread();
   }
 
@@ -117,8 +134,6 @@ class _MainShellState extends State<MainShell> implements ShellActions {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = math.max(14.0, MediaQuery.viewPaddingOf(context).bottom);
-
     return StatusScope(
       controller: _controller,
       child: ShellScope(
@@ -139,20 +154,6 @@ class _MainShellState extends State<MainShell> implements ShellActions {
                 const SettingsScreen(),
               ],
             ),
-            // kDebugMode is true only in debug builds; release builds never
-            // show this.
-            if (kDebugMode)
-              Positioned(
-                right: 16,
-                bottom: bottomInset + 63 + 10,
-                child: ListenableBuilder(
-                  listenable: _controller,
-                  builder: (context, _) => DebugMenuButton(
-                    level: _controller.status?.level,
-                    onSetLevel: _controller.debugSetLevel,
-                  ),
-                ),
-              ),
           ],
         ),
       ),

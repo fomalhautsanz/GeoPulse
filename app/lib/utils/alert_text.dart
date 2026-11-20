@@ -8,22 +8,31 @@ import '../models/device_status.dart';
   final soil = s.soilLevel == StatusLevel.critical;
   final shaking = s.vibrationLevel == StatusLevel.critical;
   final tilt = s.tiltLevel == StatusLevel.critical;
-  if (soil && shaking) {
+  if (soil && (shaking || tilt)) {
     return (
       'Combined Hazard Alert',
-      'Critical · saturated soil and strong ground vibration at the same time',
+      'Critical · saturated soil and ground movement detected',
     );
   }
-  if (soil) return ('Landslide Alert', 'Critical · the soil is saturated');
-  if (shaking) return ('Strong Vibration Alert', 'Critical · strong ground vibration');
-  if (tilt) return ('Ground Movement Alert', 'Critical · the ground is tilting past its limit');
+  if (soil) {
+    return ('Landslide Alert', 'Critical · the soil is saturated');
+  }
+  if (shaking) {
+    return ('Strong Vibration Alert', 'Critical · strong ground vibration');
+  }
+  if (tilt) {
+    return (
+      'Ground Movement Alert',
+      'Critical · the ground is tilting past its limit',
+    );
+  }
   return ('Critical Alert', 'Critical · follow official advisories');
 }
 
 /// The big title on the Status screen for each level.
 String statusTitle(StatusLevel level) => switch (level) {
-      StatusLevel.stable => 'Conditions Stable',
-      StatusLevel.watch => 'Landslide Watch',
-      StatusLevel.high => 'Landslide Risk: High',
-      StatusLevel.critical => 'Critical Alert',
-    };
+  StatusLevel.stable => 'Conditions Stable',
+  StatusLevel.watch => 'Landslide Watch',
+  StatusLevel.high => 'Landslide Risk: High',
+  StatusLevel.critical => 'Critical Alert',
+};
